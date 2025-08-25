@@ -1,14 +1,15 @@
 """
-Security configuration validator for the AI Web Scraper.
+Security configuration validator for the web scraper application.
 
-This module provides utilities to validate security configurations
-and ensure production deployments meet security requirements.
+This module provides validation for security-sensitive configuration
+to prevent common security misconfigurations.
 """
 
-import logging
 import os
 import re
-from typing import Dict, List, Optional
+import logging
+from typing import Dict, List, Any, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -25,220 +26,327 @@ class SecurityConfigValidator:
         Validate configuration for production deployment.
         
         Args:
-            settings: Application settings instance
+            settings: Application settings object
             
         Returns:
-            Dictionary with 'errors' and 'warnings' lists
+            Dict containing 'errors' and 'warnings' lists
         """
         self.errors = []
         self.warnings = []
         
-        # Check environment
-        if settings.environment.lower() == "production":
-            self._validate_production_secrets(settings)
-            self._validate_production_database(settings)
-            self._validate_production_api(settings)
-            self._validate_production_security(settings)
+        # Validate secret key
+        self._validate_secret_key(settings.secret_key)
+        
+        # Validate API keys
+        self._validate_gemini_api_key(getattr(settings, 'gemini_api_key', None))
+        
+        # Validate database configuration
+        self._validate_database_config(settings)
+        
+        # Validate environment settings
+        self._validate_environment_settings(settings)
+        
+        # Validate security headers and CORS
+        self._validate_security_headers(settings)
         
         return {
             "errors": self.errors,
             "warnings": self.warnings
         }
     
-    def _validate_production_secrets(self, settings):
-        """Validate secret keys and API keys for production."""
-        # Validate SECRET_KEY
-        if not settings.secret_key or len(settings.secret_key) < 32:
-            self.errors.append("SECRET_KEY must be at least 32 characters in production")
+    def _validate_secret_key(self, secret_key: str) -> None:
+        """Validate JWT secret key security."""
+        if not secret_key:
+            self.errors.append("SECRET_KEY is not set")
+            return
         
-        # Check for weak secret patterns
+        # Check length
+        if len(secret_key) < 32:
+            self.errors.append("SECRET_KEY must be at least 32 characters long")
+        
+        # Check for weak patterns
         weak_patterns = [
-            r"test|example|demo|change|default",
-            r"^[a-z]+$|^[A-Z]+$|^\d+$",  # Only lowercase, uppercase, or digits
-            r"^(.)\1{10,}",  # Repeated characters
+            "secret", "password", "key", "token", "admin", "test", "demo",
+            "development", "example", "changeme", "change_me", "your_"
         ]
         
-        for pattern in weak_patterns:
-            if re.search(pattern, settings.secret_key, re.IGNORECASE):
-                self.errors.append(f"SECRET_KEY appears to be weak (matches pattern: {pattern})")
+        if any(pattern in secret_key.lower() for pattern in weak_patterns):
+            self.errors.append("SECRET_KEY appears to contain weak or placeholder text")
         
-        # Validate Gemini API key
-        if not settings.gemini_api_key:
-            self.warnings.append("GEMINI_API_KEY not set - AI features will be disabled")
-        elif "your_" in settings.gemini_api_key.lower() or "example" in settings.gemini_api_key.lower():
+        # Check entropy
+        if secret_key == secret_key.lower() or secret_key == secret_key.upper():
+            self.warnings.append("SECRET_KEY should contain mixed case characters")
+        
+        if secret_key.isdigit() or secret_key.isalpha():
+            self.warnings.append("SECRET_KEY should contain mixed character types")
+        
+        # Check for common weak keys
+        common_weak_keys = [
+            "your-secret-key-change-in-production",
+            "change-me",
+            "secret-key",
+            "jwt-secret",
+            "development-key"
+        ]
+        
+        if secret_key.lower() in [key.lower() for key in common_weak_keys]:
+            self.errors.append("SECRET_KEY is using a known weak default value")
+    
+    def _validate_gemini_api_key(self, api_key: Optional[str]) -> None:
+        """Validate Gemini API key."""
+        if not api_key:
+            self.warnings.append("GEMINI_API_KEY is not set - AI features will be disabled")
+            return
+        
+        # Check for placeholder values
+        placeholder_patterns = [
+            "your_", "example", "test", "demo", "change_me", "placeholder",
+            "api_key_here", "insert_", "replace_"
+        ]
+        
+        if any(pattern in api_key.lower() for pattern in placeholder_patterns):
             self.errors.append("GEMINI_API_KEY appears to be a placeholder value")
-    
-    def _validate_production_database(self, settings):
-        """Validate database configuration for production."""
-        # Check for default database credentials
-        if settings.db_user in ["postgres", "root", "admin", "user"]:
-            self.warnings.append(f"Database user '{settings.db_user}' appears to be a default value")
         
-        if settings.db_password in ["", "password", "admin", "root"]:
-            self.errors.append("Database password appears to be weak or default")
+        # Validate Google API key format
+        if not api_key.startswith('AIza'):
+            self.warnings.append("GEMINI_API_KEY does not match expected Google API key format")
         
-        if settings.db_host in ["localhost", "127.0.0.1"]:
-            self.warnings.append("Database host is localhost - ensure this is correct for production")
-    
-    def _validate_production_api(self, settings):
-        """Validate API configuration for production."""
-        # Check debug mode
-        if settings.debug:
-            self.errors.append("DEBUG mode must be disabled in production")
+        if len(api_key) != 39:
+            self.warnings.append("GEMINI_API_KEY length does not match expected Google API key length")
         
-        # Check API host
-        if settings.api_host == "0.0.0.0":
-            self.warnings.append("API host is 0.0.0.0 - ensure proper firewall rules are in place")
+        # Check for valid character set
+        if not re.match(r'^AIza[0-9A-Za-z_-]{35}$', api_key):
+            self.warnings.append("GEMINI_API_KEY contains invalid characters for Google API key")
     
-    def _validate_production_security(self, settings):
-        """Validate security settings for production."""
-        # Check if running with proper security headers
-        if not hasattr(settings, 'cors_origins') or not settings.cors_origins:
-            self.warnings.append("CORS origins not configured - may cause security issues")
+    def _validate_database_config(self, settings) -> None:
+        """Validate database configuration security."""
+        # Check for hardcoded credentials in URL
+        if hasattr(settings, 'database_url') and settings.database_url:
+            if "user:password" in settings.database_url.lower():
+                self.errors.append("Database URL contains hardcoded credentials")
         
-        # Check rate limiting
-        if not hasattr(settings, 'rate_limit_per_minute'):
-            self.warnings.append("Rate limiting not configured")
-
-
-def validate_environment_variables() -> Dict[str, List[str]]:
-    """
-    Validate critical environment variables are set.
+        # Validate individual database settings
+        if hasattr(settings, 'db_password') and settings.db_password:
+            password = settings.db_password
+            if isinstance(password, str):
+                self._validate_database_password(password)
+        
+        # Check SSL mode
+        if hasattr(settings, 'db_ssl_mode'):
+            if not settings.db_ssl_mode or settings.db_ssl_mode == 'disable':
+                self.warnings.append("Database SSL is disabled - consider enabling for production")
     
-    Returns:
-        Dictionary with validation results
-    """
-    errors = []
-    warnings = []
+    def _validate_database_password(self, password: str) -> None:
+        """Validate database password strength."""
+        if len(password) < 12:
+            self.warnings.append("Database password should be at least 12 characters long")
+        
+        weak_passwords = [
+            "password", "admin", "root", "postgres", "user", "test",
+            "123456", "password123", "admin123"
+        ]
+        
+        if password.lower() in weak_passwords:
+            self.errors.append("Database password is too weak")
+        
+        # Check character diversity
+        has_upper = any(c.isupper() for c in password)
+        has_lower = any(c.islower() for c in password)
+        has_digit = any(c.isdigit() for c in password)
+        has_special = any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password)
+        
+        if not (has_upper and has_lower and has_digit and has_special):
+            self.warnings.append("Database password should contain uppercase, lowercase, digits, and special characters")
     
-    # Critical environment variables
-    critical_vars = [
-        "SECRET_KEY",
-        "DB_PASSWORD",
-    ]
-    
-    # Important environment variables
-    important_vars = [
-        "GEMINI_API_KEY",
-        "REDIS_URL",
-        "DATABASE_URL",
-    ]
-    
-    # Check critical variables
-    for var in critical_vars:
-        if not os.getenv(var):
-            errors.append(f"Critical environment variable {var} is not set")
-    
-    # Check important variables
-    for var in important_vars:
-        if not os.getenv(var):
-            warnings.append(f"Important environment variable {var} is not set")
-    
-    return {
-        "errors": errors,
-        "warnings": warnings
-    }
-
-
-def check_file_permissions() -> Dict[str, List[str]]:
-    """
-    Check file permissions for security-sensitive files.
-    
-    Returns:
-        Dictionary with permission check results
-    """
-    errors = []
-    warnings = []
-    
-    # Files that should have restricted permissions
-    sensitive_files = [
-        ".env",
-        "config/settings.py",
-        "data/exports/",
-    ]
-    
-    for file_path in sensitive_files:
-        if os.path.exists(file_path):
-            try:
-                stat_info = os.stat(file_path)
-                permissions = oct(stat_info.st_mode)[-3:]
+    def _validate_environment_settings(self, settings) -> None:
+        """Validate environment-specific settings."""
+        if hasattr(settings, 'environment'):
+            env = settings.environment.lower()
+            
+            if env == 'production':
+                # Production-specific validations
+                if hasattr(settings, 'debug') and settings.debug:
+                    self.errors.append("DEBUG mode should be disabled in production")
                 
-                # Check if file is world-readable (last digit > 0)
-                if int(permissions[-1]) > 0:
-                    warnings.append(f"File {file_path} is world-readable (permissions: {permissions})")
-                
-                # Check if file is group-writable (middle digit >= 2)
-                if int(permissions[-2]) >= 2:
-                    warnings.append(f"File {file_path} is group-writable (permissions: {permissions})")
-                    
-            except OSError as e:
-                warnings.append(f"Could not check permissions for {file_path}: {e}")
+                if hasattr(settings, 'log_level') and settings.log_level.upper() == 'DEBUG':
+                    self.warnings.append("DEBUG log level in production may expose sensitive information")
+        
+        # Check for development settings in production
+        if os.getenv('ENVIRONMENT', '').lower() == 'production':
+            dev_indicators = ['localhost', '127.0.0.1', 'test', 'dev', 'development']
+            
+            for attr_name in ['api_host', 'db_host', 'redis_host']:
+                if hasattr(settings, attr_name):
+                    value = getattr(settings, attr_name, '')
+                    if any(indicator in str(value).lower() for indicator in dev_indicators):
+                        self.warnings.append(f"{attr_name} appears to use development values in production")
     
-    return {
-        "errors": errors,
-        "warnings": warnings
-    }
+    def _validate_security_headers(self, settings) -> None:
+        """Validate security headers and CORS configuration."""
+        # Check CORS origins
+        if hasattr(settings, 'cors_origins'):
+            cors_origins = getattr(settings, 'cors_origins', '')
+            if isinstance(cors_origins, str):
+                origins = [origin.strip() for origin in cors_origins.split(',')]
+                
+                for origin in origins:
+                    if origin == '*':
+                        self.errors.append("CORS origins should not use wildcard (*) in production")
+                    elif origin.startswith('http://') and not origin.startswith('http://localhost'):
+                        self.warnings.append(f"CORS origin {origin} uses HTTP instead of HTTPS")
+        
+        # Check allowed hosts
+        if hasattr(settings, 'allowed_hosts'):
+            allowed_hosts = getattr(settings, 'allowed_hosts', '')
+            if isinstance(allowed_hosts, str):
+                hosts = [host.strip() for host in allowed_hosts.split(',')]
+                
+                if '*' in hosts:
+                    self.errors.append("ALLOWED_HOSTS should not use wildcard (*) in production")
+    
+    def validate_proxy_configuration(self, proxy_config: Dict[str, Any]) -> Dict[str, List[str]]:
+        """
+        Validate proxy configuration for security issues.
+        
+        Args:
+            proxy_config: Dictionary containing proxy configuration
+            
+        Returns:
+            Dict containing 'errors' and 'warnings' lists
+        """
+        errors = []
+        warnings = []
+        
+        proxy_url = proxy_config.get('proxy_url', '')
+        if proxy_url:
+            parsed = urlparse(proxy_url)
+            
+            # Check for credentials in URL
+            if parsed.username or parsed.password:
+                warnings.append("Proxy credentials in URL may be logged - consider using separate auth fields")
+            
+            # Check protocol security
+            if parsed.scheme == 'http':
+                warnings.append("HTTP proxy may transmit credentials in plain text - consider HTTPS")
+            
+            # Validate proxy host
+            if parsed.hostname in ['localhost', '127.0.0.1']:
+                warnings.append("Proxy configuration points to localhost")
+        
+        return {"errors": errors, "warnings": warnings}
+    
+    def validate_user_agent_configuration(self, user_agents: List[str]) -> Dict[str, List[str]]:
+        """
+        Validate user agent configuration for security and privacy.
+        
+        Args:
+            user_agents: List of user agent strings
+            
+        Returns:
+            Dict containing 'errors' and 'warnings' lists
+        """
+        errors = []
+        warnings = []
+        
+        for ua in user_agents:
+            # Check for system-specific information
+            system_indicators = [
+                'Windows NT 10.0', 'Windows NT 6.1', 'Mac OS X', 'Ubuntu',
+                'Intel Mac OS X', 'Win64; x64', 'WOW64'
+            ]
+            
+            if any(indicator in ua for indicator in system_indicators):
+                warnings.append(f"User agent contains system-specific information: {ua[:50]}...")
+            
+            # Check for browser version specificity
+            version_patterns = [
+                r'Chrome/\d+\.\d+\.\d+\.\d+',
+                r'Firefox/\d+\.\d+',
+                r'Safari/\d+\.\d+'
+            ]
+            
+            if any(re.search(pattern, ua) for pattern in version_patterns):
+                warnings.append("User agent contains specific browser version that may aid fingerprinting")
+            
+            # Recommend generic user agents
+            if not any(generic in ua for generic in ['compatible', 'Bot', 'Crawler', 'Scraper']):
+                warnings.append("Consider using generic user agents to reduce fingerprinting")
+        
+        return {"errors": errors, "warnings": warnings}
 
 
-def run_security_audit(settings) -> Dict[str, any]:
+def validate_environment_file(env_file_path: str = '.env') -> Dict[str, List[str]]:
     """
-    Run a comprehensive security audit.
+    Validate .env file for security issues.
     
     Args:
-        settings: Application settings instance
+        env_file_path: Path to the .env file
         
     Returns:
-        Dictionary with audit results
+        Dict containing 'errors' and 'warnings' lists
     """
+    errors = []
+    warnings = []
+    
+    if not os.path.exists(env_file_path):
+        warnings.append(f"Environment file {env_file_path} not found")
+        return {"errors": errors, "warnings": warnings}
+    
+    try:
+        with open(env_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Check for weak secret keys
+        if "your-secret-key-change-in-production" in content:
+            errors.append("Default secret key found in .env - generate a secure key")
+        
+        # Check for placeholder values
+        placeholder_patterns = [
+            "your_gemini_api_key_here",
+            "your_db_password",
+            "change_me",
+            "placeholder",
+            "example.com"
+        ]
+        
+        for pattern in placeholder_patterns:
+            if pattern in content.lower():
+                errors.append(f"Placeholder value '{pattern}' found in .env file")
+        
+        # Check for hardcoded credentials
+        if "user:password" in content:
+            errors.append("Hardcoded database credentials found in .env")
+        
+        # Check for HTTP URLs in production settings
+        if "ENVIRONMENT=production" in content and "http://" in content:
+            warnings.append("HTTP URLs found in production environment file")
+        
+        # Check file permissions (Unix-like systems)
+        if hasattr(os, 'stat'):
+            import stat
+            file_stat = os.stat(env_file_path)
+            file_mode = stat.filemode(file_stat.st_mode)
+            
+            # Check if file is readable by others
+            if file_stat.st_mode & stat.S_IROTH:
+                warnings.append(f".env file is readable by others - consider restricting permissions")
+            
+            if file_stat.st_mode & stat.S_IWOTH:
+                errors.append(f".env file is writable by others - this is a security risk")
+    
+    except Exception as e:
+        errors.append(f"Failed to validate .env file: {e}")
+    
+    return {"errors": errors, "warnings": warnings}
+
+
+if __name__ == "__main__":
+    # Example usage
     validator = SecurityConfigValidator()
     
-    # Run all validation checks
-    config_results = validator.validate_production_config(settings)
-    env_results = validate_environment_variables()
-    file_results = check_file_permissions()
+    # Validate .env file
+    env_results = validate_environment_file()
     
-    # Combine results
-    all_errors = config_results["errors"] + env_results["errors"] + file_results["errors"]
-    all_warnings = config_results["warnings"] + env_results["warnings"] + file_results["warnings"]
-    
-    # Determine overall security status
-    security_status = "SECURE"
-    if all_errors:
-        security_status = "CRITICAL_ISSUES"
-    elif len(all_warnings) > 5:
-        security_status = "NEEDS_ATTENTION"
-    elif all_warnings:
-        security_status = "MINOR_ISSUES"
-    
-    return {
-        "status": security_status,
-        "errors": all_errors,
-        "warnings": all_warnings,
-        "recommendations": _generate_recommendations(all_errors, all_warnings),
-        "audit_timestamp": logger.info("Security audit completed")
-    }
-
-
-def _generate_recommendations(errors: List[str], warnings: List[str]) -> List[str]:
-    """Generate security recommendations based on findings."""
-    recommendations = []
-    
-    if any("SECRET_KEY" in error for error in errors):
-        recommendations.append("Generate a new SECRET_KEY using: openssl rand -hex 32")
-    
-    if any("password" in error.lower() for error in errors):
-        recommendations.append("Use strong, unique passwords for all database accounts")
-    
-    if any("DEBUG" in error for error in errors):
-        recommendations.append("Set DEBUG=false in production environment")
-    
-    if any("API_KEY" in error for error in errors):
-        recommendations.append("Obtain valid API keys from service providers")
-    
-    if any("permissions" in warning.lower() for warning in warnings):
-        recommendations.append("Review and restrict file permissions: chmod 600 .env")
-    
-    if any("CORS" in warning for warning in warnings):
-        recommendations.append("Configure CORS_ORIGINS to restrict API access")
-    
-    return recommendations
+    print("Environment File Validation Results:")
+    print("Errors:", env_results["errors"])
+    print("Warnings:", env_results["warnings"])

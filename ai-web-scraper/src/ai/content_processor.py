@@ -56,13 +56,19 @@ class ContentProcessor:
         self._initialize_gemini()
     
     def _initialize_gemini(self) -> None:
-        """Initialize Gemini API configuration."""
-        if not self.settings.gemini_api_key:
+        """Initialize Gemini API configuration with security validation."""
+        api_key = self._get_secure_api_key()
+        if not api_key:
             logger.warning("Gemini API key not configured - AI processing will be disabled")
             return
         
         try:
-            genai.configure(api_key=self.settings.gemini_api_key)
+            # Validate API key format before use
+            if not self._validate_api_key_format(api_key):
+                logger.error("Invalid Gemini API key format")
+                return
+                
+            genai.configure(api_key=api_key)
             
             # Configure the model with safety settings
             generation_config = {
@@ -88,8 +94,45 @@ class ContentProcessor:
             logger.info("Gemini AI model initialized successfully")
             
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini API: {e}")
+            # Never log the actual API key or detailed error that might expose credentials
+            logger.error("Failed to initialize Gemini API: Authentication or configuration error")
             self._model = None
+    
+    def _get_secure_api_key(self) -> Optional[str]:
+        """Securely retrieve and validate API key."""
+        api_key = self.settings.gemini_api_key
+        
+        if not api_key:
+            return None
+        
+        # Check for placeholder values that shouldn't be used
+        placeholder_indicators = ["your_", "example", "test", "demo", "change_me", "placeholder"]
+        if any(indicator in api_key.lower() for indicator in placeholder_indicators):
+            logger.error("Gemini API key appears to be a placeholder value")
+            return None
+        
+        # Validate minimum length (Google API keys are typically 39 characters)
+        if len(api_key) < 20:
+            logger.error("Gemini API key appears to be too short")
+            return None
+        
+        return api_key
+    
+    def _validate_api_key_format(self, api_key: str) -> bool:
+        """Validate API key format without exposing the key."""
+        import re
+        # Google API keys typically start with AIza and are 39 characters
+        # This is a basic format check without exposing the actual key
+        if not api_key.startswith('AIza'):
+            return False
+        
+        # Check length and character set
+        if len(api_key) != 39:
+            return False
+        
+        # Validate character set (alphanumeric, underscore, hyphen)
+        pattern = r'^AIza[0-9A-Za-z_-]{35}$'
+        return bool(re.match(pattern, api_key))
     
     async def process_content(
         self,
@@ -332,7 +375,7 @@ class ContentProcessor:
             return {
                 "status": "unavailable",
                 "reason": "Gemini model not initialized",
-                "api_key_configured": bool(self.settings.gemini_api_key)
+                "api_key_configured": bool(self.settings.gemini_api_key and len(self.settings.gemini_api_key) > 10)
             }
         
         try:
