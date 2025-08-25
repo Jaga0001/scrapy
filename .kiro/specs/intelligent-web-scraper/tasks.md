@@ -2,10 +2,6 @@
 
 - [x] 1. Set up project structure and core dependencies
 
-
-
-
-
   - Create directory structure following the defined architecture (src/scraper/, src/ai/, src/api/, src/dashboard/, src/pipeline/, src/models/, src/utils/, tests/, config/, data/)
   - Create requirements.txt with core dependencies (Selenium 4.15+, FastAPI, Streamlit, Celery, Redis, PostgreSQL, google-generativeai for Gemini)
   - Set up basic configuration management with python-dotenv for environment variables
@@ -15,17 +11,6 @@
   - _Requirements: All requirements depend on proper project setup_
 
 - [x] 2. Implement core data models and database schema
-
-
-
-
-
-
-
-
-
-
-
 
   - Create Pydantic models for ScrapingJob, ScrapedData, and ScrapingConfig in src/models/
   - Implement SQLAlchemy ORM models for database tables with proper relationships
@@ -68,7 +53,10 @@
   - Write integration tests with controlled test websites
   - _Requirements: 1.4, 1.5, 5.1, 5.3_
 
-- [ ] 5. Create data repository and storage layer
+- [x] 5. Create data repository and storage layer
+
+
+
   - Implement DataRepository class in src/pipeline/repository.py with async PostgreSQL operations
   - Add CRUD methods for saving, retrieving, and filtering scraped data with proper indexing
   - Create database connection pooling and transaction management
