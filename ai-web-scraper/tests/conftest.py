@@ -44,7 +44,8 @@ class TestSettings(Settings):
     # Test API settings
     api_host: str = "127.0.0.1"
     api_port: int = 8001
-    secret_key: str = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2"
+    secret_key: str = "TEST_ONLY_SECRET_KEY_DO_NOT_USE_IN_PRODUCTION_a1b2c3d4e5f6g7h8i9j0"
+    environment: str = "test"
     
     # Test scraping settings
     max_concurrent_jobs: int = 2

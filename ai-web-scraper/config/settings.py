@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     
     # Application
     app_name: str = Field(default="AI Web Scraper", description="Application name")
+    environment: str = Field(default="development", description="Environment (development, staging, production)")
     debug: bool = Field(default=False, description="Debug mode")
     log_level: str = Field(default="INFO", description="Logging level")
     
@@ -61,14 +62,23 @@ class Settings(BaseSettings):
     @validator('secret_key')
     def validate_secret_key(cls, v):
         """Ensure secret key is secure."""
-        # Generate secure key if not provided
+        import os
+        
+        # In production, require explicit secret key
+        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            if not v or len(v) < 32:
+                raise ValueError("SECRET_KEY must be explicitly set in production and be at least 32 characters long")
+        
+        # Generate secure key if not provided (development only)
         if not v or v in ["", "your-secret-key-change-in-production", "change-me"]:
             if cls.__name__ == "Settings":  # Only auto-generate for main settings
-                import os
                 if os.getenv("SECRET_KEY"):
                     return os.getenv("SECRET_KEY")
-                # Auto-generate secure key for development
-                return secrets.token_hex(32)
+                # Auto-generate secure key for development only
+                if os.getenv("ENVIRONMENT", "development").lower() != "production":
+                    return secrets.token_hex(32)
+                else:
+                    raise ValueError("SECRET_KEY must be explicitly set in production")
         
         # Validate provided key
         if len(v) < 32:
@@ -77,10 +87,14 @@ class Settings(BaseSettings):
         # Check for common weak keys
         weak_keys = [
             "your-secret-key", "secret", "password", "key", "token",
-            "development", "test", "admin", "default"
+            "development", "test", "admin", "default", "changeme", "example"
         ]
         if any(weak in v.lower() for weak in weak_keys):
             raise ValueError("SECRET_KEY appears to be a weak or default value")
+        
+        # Ensure key has sufficient entropy
+        if v == v.lower() or v == v.upper() or v.isdigit() or v.isalpha():
+            raise ValueError("SECRET_KEY must contain mixed case letters, numbers, and special characters")
         
         return v
     
@@ -94,8 +108,43 @@ class Settings(BaseSettings):
     @validator('gemini_api_key')
     def validate_gemini_api_key(cls, v):
         """Ensure Gemini API key is provided for production."""
-        # Allow None for migrations and development
+        import os
+        
+        # In production, warn if API key is not set
+        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            if not v:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "GEMINI_API_KEY not set in production - AI features will be disabled"
+                )
+            elif any(placeholder in str(v).lower() for placeholder in ["your_", "example", "test", "demo"]):
+                raise ValueError("GEMINI_API_KEY appears to be a placeholder value")
+        
         return v
+    
+    def validate_security_config(self):
+        """Validate security configuration after initialization."""
+        from config.security_validator import SecurityConfigValidator
+        
+        validator = SecurityConfigValidator()
+        results = validator.validate_production_config(self)
+        
+        if results["errors"]:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error("Security configuration errors found:")
+            for error in results["errors"]:
+                logger.error(f"  - {error}")
+            
+            if self.environment.lower() == "production":
+                raise ValueError(f"Security configuration errors in production: {results['errors']}")
+        
+        if results["warnings"]:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("Security configuration warnings:")
+            for warning in results["warnings"]:
+                logger.warning(f"  - {warning}")
 
     class Config:
         env_file = ".env"
