@@ -7,9 +7,11 @@ techniques, error handling, and performance optimizations.
 
 import asyncio
 import logging
+import random
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urljoin, urlparse
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -20,7 +22,9 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.support import expected_conditions as EC
@@ -53,6 +57,11 @@ class SeleniumDriver:
         self.wait: Optional[WebDriverWait] = None
         self._is_initialized = False
         self._page_load_start_time = 0.0
+        self._current_user_agent = None
+        self._user_agent_pool = self._get_user_agent_pool()
+        self._viewport_sizes = [
+            (1920, 1080), (1366, 768), (1440, 900), (1536, 864), (1280, 720)
+        ]
         
     async def initialize(self) -> None:
         """Initialize the WebDriver with stealth configuration."""
@@ -93,41 +102,94 @@ class SeleniumDriver:
                     f"Failed to create WebDriver. Chrome: {chrome_error}, Firefox: {firefox_error}"
                 )
     
+    def _get_user_agent_pool(self) -> List[str]:
+        """Get a pool of realistic user agents for rotation."""
+        return [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+        ]
+    
+    def _rotate_user_agent(self) -> str:
+        """Rotate to a new user agent from the pool."""
+        if self.config.user_agent:
+            return self.config.user_agent
+        
+        # Select a random user agent different from current one
+        available_agents = [ua for ua in self._user_agent_pool if ua != self._current_user_agent]
+        if not available_agents:
+            available_agents = self._user_agent_pool
+        
+        self._current_user_agent = random.choice(available_agents)
+        return self._current_user_agent
+    
     def _create_chrome_driver(self) -> webdriver.Chrome:
-        """Create Chrome WebDriver with stealth configuration."""
+        """Create Chrome WebDriver with advanced stealth configuration."""
         options = ChromeOptions()
         
         # Basic options
         if self.config.headless:
             options.add_argument("--headless=new")
         
-        # Stealth options
+        # Advanced stealth options
         if self.config.use_stealth:
+            # Core stealth arguments
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option('useAutomationExtension', False)
+            
+            # Additional anti-detection measures
             options.add_argument("--disable-extensions")
             options.add_argument("--disable-plugins")
-            options.add_argument("--disable-images") if not self.config.load_images else None
-            options.add_argument("--disable-javascript") if not self.config.javascript_enabled else None
+            options.add_argument("--disable-web-security")
+            options.add_argument("--disable-features=VizDisplayCompositor")
+            options.add_argument("--disable-ipc-flooding-protection")
+            options.add_argument("--disable-renderer-backgrounding")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-client-side-phishing-detection")
+            options.add_argument("--disable-sync")
+            options.add_argument("--disable-default-apps")
+            options.add_argument("--hide-scrollbars")
+            options.add_argument("--mute-audio")
+            
+            # Memory and performance optimizations
+            options.add_argument("--memory-pressure-off")
+            options.add_argument("--max_old_space_size=4096")
+            
+            # Disable unnecessary features
+            if not self.config.load_images:
+                options.add_argument("--disable-images")
+                prefs = {"profile.managed_default_content_settings.images": 2}
+                options.add_experimental_option("prefs", prefs)
+            
+            if not self.config.javascript_enabled:
+                options.add_argument("--disable-javascript")
         
         # Performance options
         options.add_argument("--no-first-run")
-        options.add_argument("--disable-default-apps")
         options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-translate")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
         
-        # User agent
-        user_agent = config_manager.get_user_agent(self.config)
+        # User agent rotation
+        user_agent = self._rotate_user_agent()
         options.add_argument(f"--user-agent={user_agent}")
+        
+        # Random viewport size
+        viewport = random.choice(self._viewport_sizes)
+        options.add_argument(f"--window-size={viewport[0]},{viewport[1]}")
         
         # Proxy configuration
         if self.config.proxy_url:
             options.add_argument(f"--proxy-server={self.config.proxy_url}")
-        
-        # Window size for consistency
-        options.add_argument("--window-size=1920,1080")
         
         # Create service
         service = None
@@ -137,14 +199,90 @@ class SeleniumDriver:
         # Create driver
         driver = webdriver.Chrome(options=options, service=service)
         
-        # Additional stealth measures
+        # Advanced stealth measures post-initialization
         if self.config.use_stealth:
+            self._apply_advanced_stealth(driver, user_agent)
+        
+        return driver
+    
+    def _apply_advanced_stealth(self, driver: webdriver.Chrome, user_agent: str) -> None:
+        """Apply advanced stealth techniques after driver initialization."""
+        try:
+            # Remove webdriver property
             driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            # Override user agent via CDP
             driver.execute_cdp_cmd('Network.setUserAgentOverride', {
                 "userAgent": user_agent
             })
+            
+            # Randomize navigator properties
+            driver.execute_script("""
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+            """)
+            
+            # Add realistic timing to mouse movements
+            driver.execute_script("""
+                const originalAddEventListener = EventTarget.prototype.addEventListener;
+                EventTarget.prototype.addEventListener = function(type, listener, options) {
+                    if (type === 'mousedown' || type === 'mouseup' || type === 'click') {
+                        const delay = Math.random() * 100 + 50;
+                        setTimeout(() => originalAddEventListener.call(this, type, listener, options), delay);
+                    } else {
+                        originalAddEventListener.call(this, type, listener, options);
+                    }
+                };
+            """)
+            
+        except Exception as e:
+            logger.warning(f"Failed to apply some stealth measures: {str(e)}")
+    
+    async def simulate_human_behavior(self) -> None:
+        """Simulate human-like behavior patterns."""
+        if not self.config.use_stealth:
+            return
         
-        return driver
+        try:
+            # Random mouse movements
+            actions = ActionChains(self.driver)
+            
+            # Get viewport size
+            viewport_width = self.driver.execute_script("return window.innerWidth")
+            viewport_height = self.driver.execute_script("return window.innerHeight")
+            
+            # Random mouse movement
+            for _ in range(random.randint(1, 3)):
+                x = random.randint(0, viewport_width)
+                y = random.randint(0, viewport_height)
+                actions.move_by_offset(x - viewport_width//2, y - viewport_height//2)
+                actions.pause(random.uniform(0.1, 0.5))
+            
+            actions.perform()
+            
+            # Random scroll
+            if random.choice([True, False]):
+                scroll_amount = random.randint(100, 500)
+                self.driver.execute_script(f"window.scrollBy(0, {scroll_amount})")
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+                
+        except Exception as e:
+            logger.debug(f"Human behavior simulation failed: {str(e)}")
+    
+    async def add_random_delay(self, base_delay: float = None) -> None:
+        """Add randomized delay to mimic human behavior."""
+        if base_delay is None:
+            base_delay = self.config.delay_between_requests
+        
+        # Add 20-50% random variation to the delay
+        variation = random.uniform(0.2, 0.5)
+        actual_delay = base_delay * (1 + variation)
+        
+        await asyncio.sleep(actual_delay)
     
     def _create_firefox_driver(self) -> webdriver.Firefox:
         """Create Firefox WebDriver with stealth configuration."""
@@ -200,12 +338,21 @@ class SeleniumDriver:
         try:
             logger.info(f"Navigating to URL: {url}")
             
+            # Add random delay before navigation
+            await self.add_random_delay(0.5)
+            
             # Navigate in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self.driver.get, url)
             
             # Wait for page to be ready
             await self._wait_for_page_ready()
+            
+            # Simulate human behavior
+            await self.simulate_human_behavior()
+            
+            # Handle JavaScript-rendered content
+            await self._handle_javascript_content()
             
             load_time = time.time() - self._page_load_start_time
             
@@ -215,7 +362,9 @@ class SeleniumDriver:
                 "title": self.driver.title,
                 "load_time": load_time,
                 "page_source_length": len(self.driver.page_source),
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "user_agent": self._current_user_agent,
+                "javascript_enabled": self.config.javascript_enabled
             }
             
             logger.info(f"Successfully navigated to {url}", extra=metadata)
@@ -229,6 +378,169 @@ class SeleniumDriver:
                 "error": str(e)
             })
             raise
+    
+    async def _handle_javascript_content(self) -> None:
+        """Handle JavaScript-rendered content with intelligent waiting."""
+        if not self.config.javascript_enabled:
+            return
+        
+        try:
+            # Wait for common JavaScript frameworks to load
+            js_checks = [
+                "return document.readyState === 'complete'",
+                "return typeof jQuery === 'undefined' || jQuery.active === 0",
+                "return typeof angular === 'undefined' || angular.element(document).injector().get('$http').pendingRequests.length === 0",
+                "return typeof React === 'undefined' || document.querySelector('[data-reactroot]') !== null"
+            ]
+            
+            for check in js_checks:
+                try:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        self.wait.until,
+                        lambda driver: driver.execute_script(check)
+                    )
+                except TimeoutException:
+                    continue
+            
+            # Wait for any AJAX requests to complete
+            await self._wait_for_ajax_complete()
+            
+            # Additional wait for dynamic content
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            
+        except Exception as e:
+            logger.debug(f"JavaScript content handling failed: {str(e)}")
+    
+    async def _wait_for_ajax_complete(self) -> None:
+        """Wait for AJAX requests to complete."""
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                self.wait.until,
+                lambda driver: driver.execute_script(
+                    "return (typeof XMLHttpRequest !== 'undefined' ? "
+                    "XMLHttpRequest.prototype.readyState === 4 : true) && "
+                    "(typeof fetch !== 'undefined' ? "
+                    "!window.fetch.toString().includes('[native code]') || "
+                    "document.readyState === 'complete' : true)"
+                )
+            )
+        except (TimeoutException, WebDriverException):
+            pass
+    
+    async def find_pagination_links(self) -> List[str]:
+        """
+        Find pagination links on the current page.
+        
+        Returns:
+            List of pagination URLs
+        """
+        if not self._is_initialized:
+            raise RuntimeError("Driver not initialized")
+        
+        pagination_urls = []
+        current_url = self.driver.current_url
+        
+        try:
+            # Common pagination selectors
+            pagination_selectors = [
+                "a[href*='page']",
+                "a[href*='p=']",
+                "a[href*='offset']",
+                ".pagination a",
+                ".pager a",
+                ".page-numbers a",
+                "a[rel='next']",
+                "a.next",
+                ".next-page a"
+            ]
+            
+            for selector in pagination_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for element in elements:
+                        href = element.get_attribute('href')
+                        if href and href != current_url:
+                            # Convert relative URLs to absolute
+                            if href.startswith('/'):
+                                parsed_url = urlparse(current_url)
+                                href = f"{parsed_url.scheme}://{parsed_url.netloc}{href}"
+                            elif not href.startswith(('http://', 'https://')):
+                                href = urljoin(current_url, href)
+                            
+                            if href not in pagination_urls:
+                                pagination_urls.append(href)
+                                
+                except Exception as e:
+                    logger.debug(f"Error finding pagination with selector {selector}: {str(e)}")
+                    continue
+            
+            logger.info(f"Found {len(pagination_urls)} pagination links")
+            return pagination_urls
+            
+        except Exception as e:
+            logger.error(f"Failed to find pagination links: {str(e)}")
+            return []
+    
+    async def find_content_links(self, link_patterns: List[str] = None) -> List[str]:
+        """
+        Find content links based on patterns.
+        
+        Args:
+            link_patterns: List of CSS selectors or URL patterns to match
+            
+        Returns:
+            List of content URLs
+        """
+        if not self._is_initialized:
+            raise RuntimeError("Driver not initialized")
+        
+        content_urls = []
+        current_url = self.driver.current_url
+        
+        try:
+            # Default link patterns if none provided
+            if not link_patterns:
+                link_patterns = [
+                    "a[href*='/article/']",
+                    "a[href*='/post/']",
+                    "a[href*='/blog/']",
+                    "a[href*='/news/']",
+                    "a[href*='/product/']",
+                    ".content-link a",
+                    ".article-link a",
+                    ".post-link a"
+                ]
+            
+            for pattern in link_patterns:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, pattern)
+                    for element in elements:
+                        href = element.get_attribute('href')
+                        if href and href != current_url:
+                            # Convert relative URLs to absolute
+                            if href.startswith('/'):
+                                parsed_url = urlparse(current_url)
+                                href = f"{parsed_url.scheme}://{parsed_url.netloc}{href}"
+                            elif not href.startswith(('http://', 'https://')):
+                                href = urljoin(current_url, href)
+                            
+                            if href not in content_urls:
+                                content_urls.append(href)
+                                
+                except Exception as e:
+                    logger.debug(f"Error finding links with pattern {pattern}: {str(e)}")
+                    continue
+            
+            logger.info(f"Found {len(content_urls)} content links")
+            return content_urls
+            
+        except Exception as e:
+            logger.error(f"Failed to find content links: {str(e)}")
+            return []
     
     async def _wait_for_page_ready(self) -> None:
         """Wait for the page to be fully loaded."""

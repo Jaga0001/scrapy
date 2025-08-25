@@ -10,10 +10,11 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse, urljoin
-from urllib.robotparser import RobotFileParser
 
 from ..models.pydantic_models import ScrapingConfig, ScrapingResult, ScrapedData, JobStatus, ContentType
 from ..utils.logger import get_logger
+from ..utils.circuit_breaker import circuit_manager, CircuitBreakerConfig
+from ..utils.robots_handler import ethical_enforcer
 from .selenium_driver import SeleniumDriver
 from .content_extractor import ContentExtractor
 from .config import config_manager
@@ -41,7 +42,17 @@ class WebScraper:
         self.extractor: Optional[ContentExtractor] = None
         self._session_active = False
         self._scraped_urls: set = set()
-        self._robots_cache: Dict[str, RobotFileParser] = {}
+        
+        # Circuit breaker for resilient scraping
+        self.circuit_breaker = circuit_manager.get_breaker(
+            "web_scraper",
+            CircuitBreakerConfig(
+                failure_threshold=3,
+                recovery_timeout=30.0,
+                success_threshold=2,
+                timeout=self.config.timeout
+            )
+        )
         
         # Validate configuration
         is_valid, errors = config_manager.validate_config(self.config)
@@ -76,16 +87,33 @@ class WebScraper:
         })
         
         try:
-            # Check robots.txt if required
-            if effective_config.respect_robots_txt and not await self._check_robots_txt(url):
-                raise ValueError(f"Scraping not allowed by robots.txt: {url}")
+            # Check robots.txt and ethical scraping permissions
+            if effective_config.respect_robots_txt:
+                permission = await ethical_enforcer.check_scraping_permission(
+                    url, 
+                    config_manager.get_user_agent(effective_config),
+                    respect_robots=True
+                )
+                
+                if not permission["allowed"]:
+                    raise ValueError(f"Scraping not allowed: {permission['reason']}")
+                
+                # Set domain-specific delay if specified
+                if permission["recommended_delay"] > effective_config.delay_between_requests:
+                    parsed_url = urlparse(url)
+                    ethical_enforcer.set_domain_delay(
+                        parsed_url.netloc, 
+                        permission["recommended_delay"]
+                    )
             
             # Initialize components if needed
             if not self._session_active:
                 await self._initialize_session(effective_config)
             
-            # Perform the scraping
-            scraped_data = await self._scrape_single_page(url, job_id, effective_config)
+            # Perform the scraping with circuit breaker protection
+            scraped_data = await self.circuit_breaker.call(
+                self._scrape_single_page_protected, url, job_id, effective_config
+            )
             
             total_time = time.time() - start_time
             
@@ -155,29 +183,55 @@ class WebScraper:
             # Initialize session
             await self._initialize_session(self.config)
             
-            # Process URLs with rate limiting
-            for i, url in enumerate(urls):
+            # Process URLs with rate limiting and pagination support
+            all_urls_to_process = list(urls)
+            processed_urls = set()
+            
+            while all_urls_to_process:
+                current_url = all_urls_to_process.pop(0)
+                
+                # Skip if already processed
+                if current_url in processed_urls:
+                    continue
+                
                 try:
-                    # Check robots.txt if required
-                    if self.config.respect_robots_txt and not await self._check_robots_txt(url):
-                        logger.warning(f"Skipping URL due to robots.txt: {url}")
-                        failed_urls.append(url)
-                        continue
+                    # Check robots.txt and rate limiting
+                    if self.config.respect_robots_txt:
+                        permission = await ethical_enforcer.check_scraping_permission(
+                            current_url,
+                            config_manager.get_user_agent(self.config),
+                            respect_robots=True
+                        )
+                        
+                        if not permission["allowed"]:
+                            logger.warning(f"Skipping URL due to robots.txt: {current_url}")
+                            failed_urls.append(current_url)
+                            continue
                     
-                    # Scrape the URL
-                    data = await self._scrape_single_page(url, job_id, self.config)
+                    # Wait for rate limiting
+                    await ethical_enforcer.wait_for_rate_limit(current_url)
+                    
+                    # Scrape the URL with circuit breaker protection
+                    data = await self.circuit_breaker.call(
+                        self._scrape_single_page_protected, current_url, job_id, self.config
+                    )
+                    
                     if data:
                         scraped_data.append(data)
+                        processed_urls.add(current_url)
+                        
+                        # Find pagination and content links if enabled
+                        if self.config.follow_links and len(processed_urls) < self.config.max_depth * 10:
+                            additional_urls = await self._find_additional_urls(current_url)
+                            for new_url in additional_urls:
+                                if new_url not in processed_urls and new_url not in all_urls_to_process:
+                                    all_urls_to_process.append(new_url)
                     else:
-                        failed_urls.append(url)
-                    
-                    # Rate limiting delay
-                    if i < len(urls) - 1 and self.config.delay_between_requests > 0:
-                        await asyncio.sleep(self.config.delay_between_requests)
+                        failed_urls.append(current_url)
                         
                 except Exception as e:
-                    logger.error(f"Failed to scrape URL {url}: {str(e)}")
-                    failed_urls.append(url)
+                    logger.error(f"Failed to scrape URL {current_url}: {str(e)}")
+                    failed_urls.append(current_url)
                     continue
             
             total_time = time.time() - start_time
@@ -232,6 +286,25 @@ class WebScraper:
                 pages_scraped=len(scraped_data),
                 pages_failed=len(urls) - len(scraped_data)
             )
+    
+    async def _scrape_single_page_protected(
+        self, 
+        url: str, 
+        job_id: str, 
+        config: ScrapingConfig
+    ) -> Optional[ScrapedData]:
+        """
+        Protected version of single page scraping for circuit breaker.
+        
+        Args:
+            url: URL to scrape
+            job_id: Job identifier
+            config: Scraping configuration
+            
+        Returns:
+            ScrapedData if successful, None if failed
+        """
+        return await self._scrape_single_page(url, job_id, config)
     
     async def _scrape_single_page(
         self, 
@@ -311,6 +384,48 @@ class WebScraper:
         
         return None
     
+    async def _find_additional_urls(self, current_url: str) -> List[str]:
+        """
+        Find additional URLs from pagination and content links.
+        
+        Args:
+            current_url: Current URL being processed
+            
+        Returns:
+            List of additional URLs to scrape
+        """
+        additional_urls = []
+        
+        try:
+            # Find pagination links
+            pagination_urls = await self.driver.find_pagination_links()
+            additional_urls.extend(pagination_urls)
+            
+            # Find content links if configured
+            if self.config.extract_links:
+                content_urls = await self.driver.find_content_links()
+                additional_urls.extend(content_urls)
+            
+            # Filter URLs based on domain and depth
+            filtered_urls = []
+            current_domain = urlparse(current_url).netloc
+            
+            for url in additional_urls:
+                try:
+                    parsed = urlparse(url)
+                    # Only include URLs from the same domain
+                    if parsed.netloc == current_domain:
+                        filtered_urls.append(url)
+                except Exception:
+                    continue
+            
+            logger.debug(f"Found {len(filtered_urls)} additional URLs from {current_url}")
+            return filtered_urls[:20]  # Limit to prevent excessive crawling
+            
+        except Exception as e:
+            logger.warning(f"Failed to find additional URLs from {current_url}: {str(e)}")
+            return []
+    
     async def _initialize_session(self, config: ScrapingConfig) -> None:
         """Initialize the scraping session with driver and extractor."""
         if self._session_active:
@@ -334,43 +449,7 @@ class WebScraper:
             await self.cleanup()
             raise
     
-    async def _check_robots_txt(self, url: str) -> bool:
-        """
-        Check if scraping is allowed by robots.txt.
-        
-        Args:
-            url: URL to check
-            
-        Returns:
-            bool: True if scraping is allowed
-        """
-        try:
-            parsed_url = urlparse(url)
-            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-            
-            # Check cache first
-            if base_url in self._robots_cache:
-                rp = self._robots_cache[base_url]
-            else:
-                # Fetch and parse robots.txt
-                robots_url = urljoin(base_url, '/robots.txt')
-                rp = RobotFileParser()
-                rp.set_url(robots_url)
-                
-                # Use asyncio to avoid blocking
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, rp.read)
-                
-                self._robots_cache[base_url] = rp
-            
-            # Check if scraping is allowed
-            user_agent = config_manager.get_user_agent(self.config)
-            return rp.can_fetch(user_agent, url)
-            
-        except Exception as e:
-            logger.warning(f"Could not check robots.txt for {url}: {str(e)}")
-            # Default to allowing scraping if robots.txt check fails
-            return True
+
     
     def _calculate_confidence_score(self, extracted_content: Dict[str, Any]) -> float:
         """
