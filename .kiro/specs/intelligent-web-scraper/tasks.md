@@ -93,7 +93,15 @@
   - Write unit tests for cleaning operations with sample dirty data
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
 
-- [ ] 8. Build task queue system with Celery and Redis
+- [x] 8. Build task queue system with Celery and Redis
+
+
+
+
+
+
+
+
   - Set up Celery configuration in src/pipeline/job_queue.py with Redis backend
   - Create JobQueue class for managing asynchronous scraping tasks
   - Implement background workers in src/pipeline/worker.py for processing scraping jobs

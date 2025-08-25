@@ -511,7 +511,7 @@ class TestUserSessionORM:
         user_session = UserSessionORM(
             id=str(uuid4()),
             user_id="user123",
-            session_token="abc123def456",
+            session_token="test_token_" + str(uuid4())[:8],  # Dynamic test token
             ip_address="192.168.1.100",
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             expires_at=expires_at,
@@ -538,7 +538,7 @@ class TestUserSessionORM:
         user_session = UserSessionORM(
             id=str(uuid4()),
             user_id="user123",
-            session_token="abc123def456",
+            session_token="test_token_" + str(uuid4())[:8],  # Dynamic test token
             expires_at=datetime.utcnow() + timedelta(hours=24)
         )
         
@@ -555,10 +555,11 @@ class TestUserSessionORM:
         expires_at = datetime.utcnow() + timedelta(hours=24)
         
         # Create first session
+        test_token = "test_duplicate_" + str(uuid4())[:8]  # Dynamic test token
         session1 = UserSessionORM(
             id=str(uuid4()),
             user_id="user123",
-            session_token="duplicate_token",
+            session_token=test_token,
             expires_at=expires_at
         )
         session.add(session1)
@@ -568,7 +569,7 @@ class TestUserSessionORM:
         session2 = UserSessionORM(
             id=str(uuid4()),
             user_id="user456",
-            session_token="duplicate_token",
+            session_token=test_token,  # Use same test token to test duplicate constraint
             expires_at=expires_at
         )
         session.add(session2)
@@ -582,7 +583,7 @@ class TestUserSessionORM:
         user_session = UserSessionORM(
             id="test-session-id",
             user_id="user123",
-            session_token="abc123",
+            session_token="test_token_" + str(uuid4())[:8],  # Dynamic test token
             expires_at=datetime.utcnow(),
             is_active=True
         )
