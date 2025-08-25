@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "name": "Dependency Security & Compatibility Checker",
+  "description": "Monitors dependency files for updates and performs comprehensive security vulnerability checks, compatibility verification between Selenium/BeautifulSoup/browsers, Claude API client validation, deprecated package detection, conflict resolution, and generates update documentation with breaking change warnings plus virtual environment setup instructions",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "requirements.txt",
+      "package.json",
+      "Pipfile",
+      "pyproject.toml",
+      "setup.py",
+      "environment.yml",
+      "conda.yml"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A dependency file has been updated. Please perform the following comprehensive analysis:\n\n1. **Security Vulnerability Check**: Scan all added/updated packages for known security vulnerabilities using available security databases\n2. **Compatibility Verification**: Check compatibility between Selenium, BeautifulSoup, and current browser versions (Chrome, Firefox, Edge)\n3. **Claude API Client Validation**: Verify that Claude API client versions support current feature requirements and API endpoints\n4. **Deprecated Package Detection**: Identify any deprecated packages and suggest modern alternatives with migration guidance\n5. **Dependency Conflict Analysis**: Check for version conflicts between dependencies and suggest resolutions\n6. **Breaking Change Documentation**: Generate detailed update notes highlighting any breaking changes and required code modifications\n7. **Virtual Environment Setup**: Create step-by-step virtual environment setup instructions for the new dependency configuration\n\nPlease provide actionable recommendations and flag any critical issues that require immediate attention."
+  }
+}

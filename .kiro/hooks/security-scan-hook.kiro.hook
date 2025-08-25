@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "name": "Security Vulnerability Scanner",
+  "description": "Automatically reviews saved files in web scraper project for potential security vulnerabilities including API keys, credentials, hardcoded URLs, and sensitive configuration data",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.py",
+      "*.json",
+      "*.yaml",
+      "*.yml",
+      "*.env",
+      "*.config",
+      "*.cfg",
+      "*.ini",
+      "requirements.txt",
+      "config/*",
+      "src/*",
+      "scrapers/*"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Review the modified files for potential security vulnerabilities in this web scraper project. Specifically scan for: 1) Claude API keys, database credentials, or proxy authentication tokens 2) Hardcoded website URLs that might contain sensitive parameters 3) Session cookies or authentication headers in scraper configuration 4) Exposed database connection strings or API endpoints 5) Hardcoded user agents or proxy configurations that could leak information. For each security issue found, suggest environment variable alternatives and provide secure configuration examples using python-dotenv."
+  }
+}

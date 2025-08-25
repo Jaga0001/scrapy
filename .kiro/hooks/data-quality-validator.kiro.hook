@@ -1,0 +1,23 @@
+{
+  "enabled": true,
+  "name": "Data Quality Validator",
+  "description": "Performs comprehensive data quality checks on scraped content including completeness analysis, bot detection monitoring, AI-processed content validation, duplicate detection, encoding verification, and generates actionable quality reports with automated validation pipelines",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.json",
+      "*.csv",
+      "*.xml",
+      "*.txt",
+      "data/*",
+      "scraped/*",
+      "output/*",
+      "exports/*"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Analyze the modified data files and perform comprehensive data quality checks: 1) Check data completeness and consistency patterns, 2) Detect signs of bot detection or rate limiting in scraped content, 3) Validate that AI-processed content maintains original information integrity, 4) Identify duplicate records across scraping sessions, 5) Verify data export formats have proper encoding and structure, 6) Generate a detailed data quality report with specific improvement suggestions, 7) Recommend automated validation pipeline configurations for production deployment. Focus on actionable insights and specific data quality metrics."
+  }
+}

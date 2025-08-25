@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "name": "Schema Validation & Consistency",
+  "description": "Monitors data model and schema changes in the web scraper project to validate Pydantic models, ensure schema consistency across API responses, export formats, and AI processing requirements, and automatically generate tests and type hints.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/*model*.py",
+      "**/*schema*.py",
+      "**/models/**/*.py",
+      "**/schemas/**/*.py",
+      "**/*pydantic*.py",
+      "**/data/**/*.py",
+      "**/api/**/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Data models or schemas have been modified in the web scraper project. Please perform the following validation and consistency checks:\n\n1. **Pydantic Model Validation**: Review all modified Pydantic models to ensure they include proper field validation (type hints, constraints, validators)\n\n2. **Schema Consistency**: Verify that scraped data schemas match API response formats and maintain consistency across the application\n\n3. **Export Format Mapping**: Check that export formats (CSV/JSON) have consistent field mappings with the updated schemas\n\n4. **AI Processing Alignment**: Ensure that AI processing schemas align with Claude 4.0 input requirements and data structures\n\n5. **Test Fixture Updates**: Update corresponding test fixtures to reflect schema changes and maintain test coverage\n\n6. **Type Hint Generation**: Generate comprehensive type hints for all data transformation functions that work with the modified schemas\n\n7. **Sample Data Tests**: Automatically create sample data validation tests for any new schema additions\n\nPlease analyze the changed files and provide specific recommendations, code updates, and test cases needed to maintain data consistency across the web scraper project."
+  }
+}
