@@ -1,155 +1,275 @@
-# Security Configuration Guide
+# Security Guide for AI Web Scraper
 
-## Environment Variables Setup
+## Overview
 
-### 1. Generate Secure Keys
+This document outlines security best practices and configurations for the AI Web Scraper project. Following these guidelines ensures secure operation and protects against common vulnerabilities.
+
+## Environment Variables Security
+
+### Required Environment Variables
+
+All sensitive configuration must be externalized using environment variables:
 
 ```bash
-# Generate a secure JWT secret key
+# Database Configuration - NEVER hardcode these
+DB_HOST=your-database-host
+DB_PORT=5432
+DB_NAME=webscraper
+DB_USER=your-db-user
+DB_PASSWORD=your-secure-db-password
+
+# Alternative: Use complete DATABASE_URL (recommended for production)
+DATABASE_URL=postgresql://user:password@host:port/database
+
+# AI API Keys - NEVER commit these to version control
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# Security Keys - Generate with: openssl rand -hex 32
+SECRET_KEY=your-256-bit-secret-key-generate-with-openssl-rand-hex-32
+
+# Redis Configuration
+REDIS_URL=redis://:password@host:port/db
+```
+
+### Generating Secure Keys
+
+```bash
+# Generate a secure SECRET_KEY
 openssl rand -hex 32
 
 # Generate a secure database password
 openssl rand -base64 32
 
-# Generate a secure Redis password
-openssl rand -base64 24
+# Generate API keys (service-specific)
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-### 2. Production Environment Variables
+## Scraping Security Configuration
 
-Create a `.env` file with the following secure configuration:
+### User Agent Security
+
+**❌ AVOID**: Hardcoded user agents
+```python
+# BAD - Easily detected
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+```
+
+**✅ RECOMMENDED**: Environment-based user agent rotation
+```bash
+# .env file
+SCRAPER_DEFAULT_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+SCRAPER_USER_AGENT_ROTATION=true
+SCRAPER_CUSTOM_USER_AGENTS="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36,Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+```
+
+### Proxy Configuration Security
+
+**❌ AVOID**: Hardcoded proxy credentials
+```python
+# BAD - Credentials exposed
+proxy_url = "http://username:password@proxy.example.com:8080"
+```
+
+**✅ RECOMMENDED**: Environment-based proxy configuration
+```bash
+# .env file
+SCRAPER_DEFAULT_PROXY_URL="${PROXY_PROTOCOL}://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}"
+PROXY_PROTOCOL=http
+PROXY_HOST=your-proxy-host
+PROXY_PORT=8080
+PROXY_USER=your-proxy-username
+PROXY_PASS=your-proxy-password
+```
+
+### Domain Security
+
+Configure allowed and blocked domains:
 
 ```bash
-# Application
-ENVIRONMENT=production
+# .env file
+SECURITY_ALLOWED_DOMAINS="example.com,trusted-site.com"
+SECURITY_BLOCKED_DOMAINS="malicious-site.com,blocked-domain.com"
+```
+
+## Database Security
+
+### Connection Security
+
+**✅ RECOMMENDED**: Use connection pooling and SSL
+```python
+# Secure database configuration
+DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
+DB_ECHO=false  # Disable in production to avoid logging queries
+```
+
+### Credential Management
+
+1. **Never commit database credentials to version control**
+2. **Use strong, unique passwords**
+3. **Enable SSL/TLS for database connections**
+4. **Implement connection pooling**
+5. **Use read-only database users where possible**
+
+## API Security
+
+### Authentication
+
+```bash
+# .env file
+SECRET_KEY=your-256-bit-secret-key-generate-with-openssl-rand-hex-32
+JWT_ALGORITHM=HS256
+JWT_EXPIRE_MINUTES=30
+```
+
+### Rate Limiting
+
+```bash
+# .env file
+API_RATE_LIMIT_PER_MINUTE=60
+API_MAX_REQUEST_SIZE=10485760  # 10MB
+```
+
+## AI API Security
+
+### Gemini API Configuration
+
+```bash
+# .env file
+GEMINI_API_KEY=your-gemini-api-key-here
+GEMINI_MODEL=gemini-2.0-flash-exp
+GEMINI_MAX_TOKENS=8192
+```
+
+### Best Practices
+
+1. **Rotate API keys regularly**
+2. **Monitor API usage and costs**
+3. **Implement request timeouts**
+4. **Validate AI responses before processing**
+5. **Never log API keys or responses containing sensitive data**
+
+## Deployment Security
+
+### Production Environment
+
+```bash
+# .env.production
 DEBUG=false
 LOG_LEVEL=WARNING
+ENVIRONMENT=production
 
-# Database (Use individual components OR full URL, not both)
-DB_HOST=your-db-host
-DB_PORT=5432
-DB_NAME=webscraper_prod
-DB_USER=webscraper_user
-DB_PASSWORD=your-secure-generated-password
+# Security headers
+ALLOWED_HOSTS=your-domain.com
+CORS_ORIGINS=https://your-frontend.com
 
-# Alternative: Full database URL (preferred for production)
-# DATABASE_URL=postgresql://user:password@host:port/database
+# Database
+DATABASE_URL=postgresql://user:password@prod-db:5432/webscraper?sslmode=require
 
 # Redis
-REDIS_HOST=your-redis-host
-REDIS_PORT=6379
-REDIS_DB=0
-REDIS_PASSWORD=your-secure-redis-password
-
-# AI Configuration
-GEMINI_API_KEY=your-actual-gemini-api-key
-GEMINI_MODEL=gemini-2.0-flash-exp
-
-# API Security
-SECRET_KEY=your-generated-256-bit-secret-key
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=15
-
-# Network Security
-ALLOWED_HOSTS=yourdomain.com,api.yourdomain.com
-CORS_ORIGINS=https://yourdomain.com,https://dashboard.yourdomain.com
-RATE_LIMIT_PER_MINUTE=30
-
-# Scraping Security
-SCRAPER_RESPECT_ROBOTS_TXT=true
-SCRAPER_MAX_CONCURRENT_JOBS=5
-SCRAPER_DEFAULT_DELAY=2.0
-SCRAPER_VALIDATE_SSL=true
+REDIS_URL=redis://:password@prod-redis:6379/0
 ```
 
-### 3. Security Best Practices
+### Docker Security
 
-#### API Keys and Secrets
-- **Never commit** `.env` files to version control
-- Use different keys for development, staging, and production
-- Rotate keys regularly (every 90 days)
-- Use key management services (AWS Secrets Manager, Azure Key Vault) in production
+```dockerfile
+# Use non-root user
+RUN adduser --disabled-password --gecos '' appuser
+USER appuser
 
-#### Database Security
-- Use strong, unique passwords for database users
-- Create dedicated database users with minimal required permissions
-- Enable SSL/TLS for database connections
-- Use connection pooling with proper limits
-
-#### Network Security
-- Restrict `ALLOWED_HOSTS` to your actual domains
-- Configure `CORS_ORIGINS` to only allow trusted origins
-- Use HTTPS in production
-- Implement rate limiting to prevent abuse
-
-#### Scraping Ethics
-- Always respect `robots.txt`
-- Implement reasonable delays between requests
-- Use appropriate user agents (don't impersonate real browsers maliciously)
-- Monitor and respect rate limits from target websites
-
-### 4. Environment-Specific Configurations
-
-#### Development
-```bash
-ENVIRONMENT=development
-DEBUG=true
-LOG_LEVEL=DEBUG
-DB_HOST=localhost
-REDIS_HOST=localhost
-ALLOWED_HOSTS=localhost,127.0.0.1
-CORS_ORIGINS=http://localhost:3000,http://localhost:8501
+# Don't include .env files in Docker images
+# Use Docker secrets or environment variables instead
 ```
 
-#### Staging
-```bash
-ENVIRONMENT=staging
-DEBUG=false
-LOG_LEVEL=INFO
-# Use staging-specific credentials
+## Monitoring and Logging
+
+### Secure Logging
+
+```python
+# Log configuration - NEVER log sensitive data
+import logging
+
+# Configure structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s"}',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log')
+    ]
+)
+
+# Example: Safe logging
+logger.info(f"Scraping job started for domain: {domain}")
+# NEVER: logger.info(f"Using API key: {api_key}")
 ```
 
-#### Production
-```bash
-ENVIRONMENT=production
-DEBUG=false
-LOG_LEVEL=WARNING
-# Use production credentials with maximum security
-```
+### Security Monitoring
 
-### 5. Credential Validation
-
-The application includes built-in validation for:
-- Secret key length and complexity
-- API key format validation
-- Database URL security checks
-- Host and origin validation
-
-### 6. Monitoring and Alerting
-
-Set up monitoring for:
+Monitor for:
 - Failed authentication attempts
 - Unusual scraping patterns
 - API rate limit violations
 - Database connection failures
-- SSL certificate expiration
+- Proxy connection issues
 
-### 7. Data Protection
+## Security Checklist
 
-- Enable data encryption at rest when `ENCRYPT_STORED_DATA=true`
-- Configure data retention policies with `DATA_RETENTION_DAYS`
-- Implement proper data anonymization for sensitive content
-- Regular security audits and penetration testing
+### Before Deployment
 
-## Quick Security Checklist
-
-- [ ] All secrets stored in environment variables
+- [ ] All credentials externalized to environment variables
 - [ ] Strong, unique passwords generated
 - [ ] SSL/TLS enabled for all connections
-- [ ] Rate limiting configured
-- [ ] CORS properly configured
-- [ ] Robots.txt respected
-- [ ] Input validation enabled
-- [ ] Logging configured (without exposing secrets)
-- [ ] Regular security updates applied
-- [ ] Monitoring and alerting set up
+- [ ] User agent rotation configured
+- [ ] Domain allowlists/blocklists configured
+- [ ] Rate limiting enabled
+- [ ] Logging configured (without sensitive data)
+- [ ] Security headers implemented
+- [ ] API authentication enabled
+- [ ] Database access restricted
+
+### Regular Security Tasks
+
+- [ ] Rotate API keys monthly
+- [ ] Update user agent strings quarterly
+- [ ] Review and update domain lists
+- [ ] Monitor for security vulnerabilities
+- [ ] Update dependencies regularly
+- [ ] Review access logs for anomalies
+- [ ] Test backup and recovery procedures
+
+## Common Security Mistakes to Avoid
+
+1. **Hardcoding credentials in source code**
+2. **Using weak or default passwords**
+3. **Exposing sensitive data in logs**
+4. **Not validating user inputs**
+5. **Using outdated dependencies**
+6. **Not implementing rate limiting**
+7. **Ignoring SSL certificate validation**
+8. **Not rotating credentials regularly**
+9. **Using obvious bot-like user agents**
+10. **Not respecting robots.txt and rate limits**
+
+## Incident Response
+
+If you suspect a security breach:
+
+1. **Immediately rotate all credentials**
+2. **Review access logs for unauthorized activity**
+3. **Check for data exfiltration**
+4. **Update security configurations**
+5. **Document the incident**
+6. **Implement additional monitoring**
+
+## Security Resources
+
+- [OWASP Web Application Security Testing Guide](https://owasp.org/www-project-web-security-testing-guide/)
+- [Python Security Best Practices](https://python.org/dev/security/)
+- [PostgreSQL Security Documentation](https://www.postgresql.org/docs/current/security.html)
+- [Redis Security Documentation](https://redis.io/topics/security)
+
+## Contact
+
+For security-related questions or to report vulnerabilities, please contact the development team through secure channels.

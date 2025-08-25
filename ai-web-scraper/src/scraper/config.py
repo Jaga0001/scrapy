@@ -205,9 +205,32 @@ class ConfigManager:
             import random
             return random.choice(self.settings.custom_user_agents)
         
-        # Default user agent
+        # Default user agent from environment or secure fallback
+        if self.settings.default_user_agent:
+            return self.settings.default_user_agent
+        
         return self.settings.custom_user_agents[0] if self.settings.custom_user_agents else \
-               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+               self._get_secure_default_user_agent()
+    
+    def _get_secure_default_user_agent(self) -> str:
+        """Get a secure default user agent that rotates based on system time."""
+        import hashlib
+        import time
+        
+        # Rotate user agent daily to avoid detection
+        day_seed = int(time.time() // 86400)  # Changes every 24 hours
+        
+        secure_user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0"
+        ]
+        
+        # Select user agent based on day seed for consistent daily rotation
+        index = day_seed % len(secure_user_agents)
+        return secure_user_agents[index]
     
     def update_settings(self, **kwargs) -> None:
         """

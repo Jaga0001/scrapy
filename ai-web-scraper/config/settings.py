@@ -61,9 +61,27 @@ class Settings(BaseSettings):
     @validator('secret_key')
     def validate_secret_key(cls, v):
         """Ensure secret key is secure."""
-        # Allow empty secret key for migrations and development
-        if v and v not in ["", "your-secret-key-change-in-production"] and len(v) < 32:
+        # Generate secure key if not provided
+        if not v or v in ["", "your-secret-key-change-in-production", "change-me"]:
+            if cls.__name__ == "Settings":  # Only auto-generate for main settings
+                import os
+                if os.getenv("SECRET_KEY"):
+                    return os.getenv("SECRET_KEY")
+                # Auto-generate secure key for development
+                return secrets.token_hex(32)
+        
+        # Validate provided key
+        if len(v) < 32:
             raise ValueError("SECRET_KEY must be at least 32 characters long")
+        
+        # Check for common weak keys
+        weak_keys = [
+            "your-secret-key", "secret", "password", "key", "token",
+            "development", "test", "admin", "default"
+        ]
+        if any(weak in v.lower() for weak in weak_keys):
+            raise ValueError("SECRET_KEY appears to be a weak or default value")
+        
         return v
     
     @validator('database_url')
