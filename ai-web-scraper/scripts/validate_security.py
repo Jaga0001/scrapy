@@ -1,291 +1,151 @@
 #!/usr/bin/env python3
 """
-Security validation script for the AI Web Scraper project.
-
-This script validates the security configuration and identifies potential
-security issues before deployment.
+Security validation script for the web scraper project.
+Run this before deployment to check for security issues.
 """
 
 import os
-import re
 import sys
+import logging
 from pathlib import Path
-from typing import List, Dict, Any
-from urllib.parse import urlparse
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from config.security_validator import SecurityConfigValidator, validate_environment_file
+from config.settings import get_settings
 
-class SecurityValidator:
-    """Validates security configuration and identifies vulnerabilities."""
-    
-    def __init__(self):
-        self.issues = []
-        self.warnings = []
-        self.info = []
-        
-    def validate_environment_file(self, env_file: Path) -> None:
-        """Validate .env file for security issues."""
-        if not env_file.exists():
-            self.warnings.append(f"Environment file not found: {env_file}")
-            return
-        
-        with open(env_file, 'r') as f:
-            content = f.read()
-        
-        # Check for placeholder values
-        placeholder_patterns = [
-            r'your_.*',
-            r'example.*',
-            r'test.*',
-            r'placeholder.*',
-            r'changeme.*',
-            r'password123',
-            r'admin',
-            r'root'
-        ]
-        
-        for line_num, line in enumerate(content.split('\n'), 1):
-            if '=' in line and not line.strip().startswith('#'):
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip().strip('"\'')
-                
-                # Check for placeholder values
-                for pattern in placeholder_patterns:
-                    if re.match(pattern, value.lower()):
-                        self.issues.append(
-                            f"{env_file}:{line_num} - Placeholder value detected: {key}={value}"
-                        )
-                
-                # Check specific security requirements
-                if key == 'SECRET_KEY' and len(value) < 32:
-                    self.issues.append(
-                        f"{env_file}:{line_num} - SECRET_KEY too short (minimum 32 characters)"
-                    )
-                
-                if key == 'GEMINI_API_KEY':
-                    if not value.startswith('AIza') or len(value) != 39:
-                        self.issues.append(
-                            f"{env_file}:{line_num} - Invalid Gemini API key format"
-                        )
-                
-                if 'PASSWORD' in key and len(value) < 12:
-                    self.issues.append(
-                        f"{env_file}:{line_num} - Password too short: {key} (minimum 12 characters)"
-                    )
-                
-                if key.endswith('_URL') and 'localhost' not in value:
-                    parsed = urlparse(value)
-                    if parsed.password:
-                        self.warnings.append(
-                            f"{env_file}:{line_num} - URL contains embedded credentials: {key}"
-                        )
-    
-    def validate_redis_configuration(self) -> None:
-        """Validate Redis configuration security."""
-        try:
-            from src.config.redis_config import RedisSettings, validate_redis_configuration
-            
-            # Test Redis settings validation
-            try:
-                validate_redis_configuration()
-                self.info.append("Redis configuration validation passed")
-            except Exception as e:
-                self.issues.append(f"Redis configuration validation failed: {str(e)}")
-                
-        except ImportError:
-            self.warnings.append("Redis configuration module not found")
-    
-    def scan_source_code(self) -> None:
-        """Scan source code for hardcoded secrets."""
-        source_dirs = [
-            project_root / "src",
-            project_root / "tests",
-            project_root / "scripts"
-        ]
-        
-        # Patterns to look for
-        secret_patterns = [
-            (r'password\s*=\s*["\'][^"\']+["\']', "Hardcoded password"),
-            (r'api_key\s*=\s*["\'][^"\']+["\']', "Hardcoded API key"),
-            (r'secret\s*=\s*["\'][^"\']+["\']', "Hardcoded secret"),
-            (r'token\s*=\s*["\'][^"\']+["\']', "Hardcoded token"),
-            (r'redis://[^@]*:[^@]*@', "Redis URL with credentials"),
-            (r'postgresql://[^@]*:[^@]*@', "PostgreSQL URL with credentials"),
-            (r'AIza[0-9A-Za-z-_]{35}', "Google API key"),
-        ]
-        
-        for source_dir in source_dirs:
-            if not source_dir.exists():
-                continue
-                
-            for py_file in source_dir.rglob("*.py"):
-                try:
-                    with open(py_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    for line_num, line in enumerate(content.split('\n'), 1):
-                        for pattern, description in secret_patterns:
-                            if re.search(pattern, line, re.IGNORECASE):
-                                # Skip comments, test files, and pattern definitions
-                                if (line.strip().startswith('#') or 
-                                    'test' in str(py_file).lower() and 
-                                    any(test_word in line.lower() for test_word in ['test', 'mock', 'example']) or
-                                    'pattern' in line.lower() or
-                                    'r\'' in line or
-                                    'security_patterns' in line.lower() or
-                                    'secret_patterns' in line.lower()):
-                                    continue
-                                
-                                self.issues.append(
-                                    f"{py_file}:{line_num} - {description}: {line.strip()}"
-                                )
-                                
-                except Exception as e:
-                    self.warnings.append(f"Could not scan {py_file}: {str(e)}")
-    
-    def check_file_permissions(self) -> None:
-        """Check file permissions for sensitive files."""
-        sensitive_files = [
-            project_root / ".env",
-            project_root / ".env.local",
-            project_root / ".env.production",
-        ]
-        
-        for file_path in sensitive_files:
-            if file_path.exists():
-                stat = file_path.stat()
-                mode = oct(stat.st_mode)[-3:]
-                
-                if mode != '600':
-                    self.warnings.append(
-                        f"Insecure file permissions for {file_path}: {mode} (should be 600)"
-                    )
-                else:
-                    self.info.append(f"Secure file permissions for {file_path}: {mode}")
-    
-    def validate_logging_security(self) -> None:
-        """Check for potential credential exposure in logging."""
-        log_patterns = [
-            (r'logger\.(info|debug|warning|error).*redis_url', "Redis URL in logs"),
-            (r'logger\.(info|debug|warning|error).*password', "Password in logs"),
-            (r'logger\.(info|debug|warning|error).*api_key', "API key in logs"),
-            (r'logger\.(info|debug|warning|error).*secret', "Secret in logs"),
-        ]
-        
-        source_files = list((project_root / "src").rglob("*.py"))
-        
-        for py_file in source_files:
-            try:
-                with open(py_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                for line_num, line in enumerate(content.split('\n'), 1):
-                    for pattern, description in log_patterns:
-                        if re.search(pattern, line, re.IGNORECASE):
-                            # Check if it's using a sanitized version
-                            if 'sanitize' in line.lower() or 'safe' in line.lower():
-                                self.info.append(
-                                    f"{py_file}:{line_num} - Secure logging detected: {description}"
-                                )
-                            else:
-                                self.warnings.append(
-                                    f"{py_file}:{line_num} - Potential credential exposure: {description}"
-                                )
-                                
-            except Exception as e:
-                self.warnings.append(f"Could not scan {py_file}: {str(e)}")
-    
-    def run_all_validations(self) -> Dict[str, Any]:
-        """Run all security validations."""
-        print("🔍 Running security validation...")
-        
-        # Validate environment files
-        env_files = [
-            project_root / ".env",
-            project_root / ".env.local",
-            project_root / ".env.production",
-        ]
-        
-        for env_file in env_files:
-            self.validate_environment_file(env_file)
-        
-        # Run other validations
-        self.validate_redis_configuration()
-        self.scan_source_code()
-        self.check_file_permissions()
-        self.validate_logging_security()
-        
-        return {
-            "issues": self.issues,
-            "warnings": self.warnings,
-            "info": self.info
-        }
-    
-    def print_results(self, results: Dict[str, Any]) -> int:
-        """Print validation results and return exit code."""
-        issues = results["issues"]
-        warnings = results["warnings"]
-        info = results["info"]
-        
-        print("\n" + "="*60)
-        print("SECURITY VALIDATION RESULTS")
-        print("="*60)
-        
-        if issues:
-            print(f"\n🚨 CRITICAL ISSUES ({len(issues)}):")
-            for issue in issues:
-                print(f"   ❌ {issue}")
-        
-        if warnings:
-            print(f"\n⚠️  WARNINGS ({len(warnings)}):")
-            for warning in warnings:
-                print(f"   ⚠️  {warning}")
-        
-        if info:
-            print(f"\n✅ INFORMATION ({len(info)}):")
-            for item in info:
-                print(f"   ℹ️  {item}")
-        
-        print(f"\n📊 SUMMARY:")
-        print(f"   Critical Issues: {len(issues)}")
-        print(f"   Warnings: {len(warnings)}")
-        print(f"   Info Items: {len(info)}")
-        
-        if issues:
-            print(f"\n❌ VALIDATION FAILED - {len(issues)} critical issues found")
-            print("   Please fix all critical issues before deployment.")
-            return 1
-        elif warnings:
-            print(f"\n⚠️  VALIDATION PASSED WITH WARNINGS - {len(warnings)} warnings")
-            print("   Consider addressing warnings for better security.")
-            return 0
-        else:
-            print(f"\n✅ VALIDATION PASSED - No security issues found")
-            return 0
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def main():
-    """Main function."""
-    validator = SecurityValidator()
-    results = validator.run_all_validations()
-    exit_code = validator.print_results(results)
+    """Run comprehensive security validation."""
+    print("🔍 Running Security Validation...")
+    print("=" * 50)
     
-    if exit_code == 0:
-        print("\n🛡️  Security validation completed successfully!")
-        print("   Your configuration appears to be secure.")
+    total_errors = 0
+    total_warnings = 0
+    
+    # 1. Validate environment file
+    print("\n📁 Validating .env file...")
+    env_results = validate_environment_file()
+    
+    if env_results["errors"]:
+        print("❌ Environment File Errors:")
+        for error in env_results["errors"]:
+            print(f"   • {error}")
+        total_errors += len(env_results["errors"])
+    
+    if env_results["warnings"]:
+        print("⚠️  Environment File Warnings:")
+        for warning in env_results["warnings"]:
+            print(f"   • {warning}")
+        total_warnings += len(env_results["warnings"])
+    
+    if not env_results["errors"] and not env_results["warnings"]:
+        print("✅ Environment file validation passed")
+    
+    # 2. Validate application settings
+    print("\n⚙️  Validating application settings...")
+    try:
+        settings = get_settings()
+        validator = SecurityConfigValidator()
+        config_results = validator.validate_production_config(settings)
+        
+        if config_results["errors"]:
+            print("❌ Configuration Errors:")
+            for error in config_results["errors"]:
+                print(f"   • {error}")
+            total_errors += len(config_results["errors"])
+        
+        if config_results["warnings"]:
+            print("⚠️  Configuration Warnings:")
+            for warning in config_results["warnings"]:
+                print(f"   • {warning}")
+            total_warnings += len(config_results["warnings"])
+        
+        if not config_results["errors"] and not config_results["warnings"]:
+            print("✅ Application settings validation passed")
+            
+    except Exception as e:
+        print(f"❌ Failed to validate settings: {e}")
+        total_errors += 1
+    
+    # 3. Check file permissions
+    print("\n🔒 Checking file permissions...")
+    env_file = Path(".env")
+    if env_file.exists():
+        import stat
+        file_stat = env_file.stat()
+        
+        # Check if file is readable by others (Unix-like systems)
+        if hasattr(stat, 'S_IROTH') and file_stat.st_mode & stat.S_IROTH:
+            print("⚠️  .env file is readable by others - consider: chmod 600 .env")
+            total_warnings += 1
+        
+        if hasattr(stat, 'S_IWOTH') and file_stat.st_mode & stat.S_IWOTH:
+            print("❌ .env file is writable by others - this is a security risk!")
+            total_errors += 1
+        
+        if total_errors == 0 and total_warnings == 0:
+            print("✅ File permissions are secure")
     else:
-        print("\n🔧 NEXT STEPS:")
-        print("   1. Fix all critical issues listed above")
-        print("   2. Review and address warnings")
-        print("   3. Run this script again to verify fixes")
-        print("   4. Use .env.secure.example as a reference")
+        print("⚠️  .env file not found")
+        total_warnings += 1
     
-    sys.exit(exit_code)
+    # 4. Check for common security files
+    print("\n📋 Checking security files...")
+    security_files = [
+        ".gitignore",
+        "requirements.txt",
+        "config/security.py",
+        "config/security_validator.py",
+        ".env.secure.example",
+        ".env.test.example",
+        "docs/GITHUB_SECRETS_SETUP.md"
+    ]
+    
+    missing_files = []
+    for file_path in security_files:
+        if not Path(file_path).exists():
+            missing_files.append(file_path)
+    
+    if missing_files:
+        print("⚠️  Missing security-related files:")
+        for file_path in missing_files:
+            print(f"   • {file_path}")
+        total_warnings += len(missing_files)
+    else:
+        print("✅ All security files present")
+    
+    # 5. Summary
+    print("\n" + "=" * 50)
+    print("📊 Security Validation Summary")
+    print("=" * 50)
+    
+    if total_errors == 0 and total_warnings == 0:
+        print("🎉 All security checks passed!")
+        print("✅ Your configuration appears secure for deployment.")
+        return 0
+    
+    if total_errors > 0:
+        print(f"❌ Found {total_errors} security error(s) that must be fixed")
+        
+    if total_warnings > 0:
+        print(f"⚠️  Found {total_warnings} security warning(s) to review")
+    
+    print("\n📖 For detailed security guidance, see:")
+    print("   • SECURITY_CONFIGURATION_GUIDE.md")
+    print("   • .env.secure.example")
+    print("   • .env.test.example")
+    print("   • docs/GITHUB_SECRETS_SETUP.md")
+    
+    # Return non-zero exit code if there are errors
+    return 1 if total_errors > 0 else 0
 
 
 if __name__ == "__main__":
-    main()
+    exit_code = main()
+    sys.exit(exit_code)

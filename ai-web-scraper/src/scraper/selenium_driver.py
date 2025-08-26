@@ -103,15 +103,22 @@ class SeleniumDriver:
                 )
     
     def _get_user_agent_pool(self) -> List[str]:
-        """Get a pool of realistic user agents for rotation."""
+        """Get a pool of generic user agents for rotation to prevent fingerprinting."""
+        # Check if custom user agents are configured via environment
+        from config.settings import get_settings
+        settings = get_settings()
+        
+        if hasattr(settings, 'scraper_user_agents') and settings.scraper_user_agents:
+            # Use configured generic user agents
+            return settings.scraper_user_agents.split('|')
+        
+        # Fallback to generic user agents that don't reveal system details
         return [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+            "Mozilla/5.0 (compatible; WebScraper/1.0)",
+            "Mozilla/5.0 (compatible; DataCollector/1.0)",
+            "Mozilla/5.0 (compatible; ContentExtractor/1.0)",
+            "Mozilla/5.0 (compatible; ResearchBot/1.0)",
+            "Mozilla/5.0 (compatible; AnalyticsBot/1.0)"
         ]
     
     def _rotate_user_agent(self) -> str:

@@ -3,7 +3,7 @@ AI Content Processing Pipeline using Gemini 2.5 API.
 
 This module provides the main ContentProcessor class that orchestrates
 AI-powered content analysis, extraction, and processing using Google's
-Gemini 2.5 model.
+Gemini 2.5 model with comprehensive error handling and recovery.
 """
 
 import asyncio
@@ -17,9 +17,15 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from config.settings import get_settings
 from src.models.pydantic_models import ScrapedData, ContentType
+from src.utils.exceptions import (
+    AIServiceException, ContentProcessingException, 
+    ConfidenceThresholdException, ErrorSeverity
+)
+from src.utils.error_recovery import with_recovery, recovery_manager
+from src.utils.error_notifications import notify_error
+from src.utils.logger import get_logger, get_correlation_id
 
-
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ProcessedContent:
@@ -54,6 +60,7 @@ class ContentProcessor:
         self.settings = get_settings()
         self._model = None
         self._initialize_gemini()
+        self._register_fallback_functions()
     
     def _initialize_gemini(self) -> None:
         """Initialize Gemini API configuration with security validation."""
@@ -134,6 +141,7 @@ class ContentProcessor:
         pattern = r'^AIza[0-9A-Za-z_-]{35}$'
         return bool(re.match(pattern, api_key))
     
+    @with_recovery("ai_content_processing")
     async def process_content(
         self,
         raw_content: str,
@@ -153,11 +161,30 @@ class ContentProcessor:
         Returns:
             ProcessedContent: AI-processed content with structured data
         """
+        correlation_id = get_correlation_id()
+        
         if not self._model:
             logger.warning("Gemini model not available - using fallback processing")
+            await notify_error(
+                AIServiceException("Gemini model not initialized", service_name="gemini"),
+                "ai_content_processor",
+                context={"url": url, "content_type": content_type.value},
+                correlation_id=correlation_id
+            )
             return await self._fallback_processing(raw_content, content_type, url)
         
         try:
+            # Validate input parameters
+            if not raw_content or not raw_content.strip():
+                raise ContentProcessingException(
+                    "Empty or invalid content provided",
+                    processing_stage="input_validation",
+                    content_length=len(raw_content)
+                )
+            
+            if len(raw_content) > 1000000:  # 1MB limit
+                logger.warning(f"Content size ({len(raw_content)} chars) exceeds recommended limit")
+            
             # Import AI modules here to avoid circular imports
             from src.ai.text_analyzer import TextAnalyzer
             from src.ai.structure_extractor import StructureExtractor
@@ -170,8 +197,8 @@ class ContentProcessor:
             
             # Process content in parallel where possible
             tasks = [
-                text_analyzer.analyze_text(raw_content, url),
-                structure_extractor.extract_structure(raw_content, content_type, url)
+                self._safe_analyze_text(text_analyzer, raw_content, url),
+                self._safe_extract_structure(structure_extractor, raw_content, content_type, url)
             ]
             
             analysis_results, structure_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -179,10 +206,22 @@ class ContentProcessor:
             # Handle any exceptions from parallel processing
             if isinstance(analysis_results, Exception):
                 logger.error(f"Text analysis failed: {analysis_results}")
+                await notify_error(
+                    analysis_results,
+                    "ai_text_analyzer",
+                    context={"url": url, "content_length": len(raw_content)},
+                    correlation_id=correlation_id
+                )
                 analysis_results = {"entities": [], "classification": {"category": "unknown"}}
             
             if isinstance(structure_results, Exception):
                 logger.error(f"Structure extraction failed: {structure_results}")
+                await notify_error(
+                    structure_results,
+                    "ai_structure_extractor",
+                    context={"url": url, "content_type": content_type.value},
+                    correlation_id=correlation_id
+                )
                 structure_results = {"structured_data": {}, "metadata": {}}
             
             # Combine results
@@ -191,12 +230,31 @@ class ContentProcessor:
             classification = analysis_results.get("classification", {"category": "unknown"})
             
             # Calculate confidence score
-            confidence_score = await confidence_scorer.calculate_confidence(
-                structured_data=structured_data,
-                entities=entities,
-                classification=classification,
-                raw_content=raw_content
-            )
+            try:
+                confidence_score = await confidence_scorer.calculate_confidence(
+                    structured_data=structured_data,
+                    entities=entities,
+                    classification=classification,
+                    raw_content=raw_content
+                )
+                
+                # Check confidence threshold
+                min_confidence = 0.3  # Configurable threshold
+                if confidence_score < min_confidence:
+                    await notify_error(
+                        ConfidenceThresholdException(
+                            f"AI processing confidence ({confidence_score:.2f}) below threshold ({min_confidence})",
+                            confidence_score=confidence_score,
+                            threshold=min_confidence
+                        ),
+                        "ai_confidence_scorer",
+                        context={"url": url, "confidence": confidence_score},
+                        correlation_id=correlation_id
+                    )
+                
+            except Exception as e:
+                logger.error(f"Confidence scoring failed: {e}")
+                confidence_score = 0.5  # Default confidence
             
             # Prepare processing metadata
             processing_metadata = {
@@ -207,10 +265,11 @@ class ContentProcessor:
                 "structure_complexity": len(structured_data),
                 "analysis_metadata": analysis_results.get("metadata", {}),
                 "structure_metadata": structure_results.get("metadata", {}),
-                "additional_context": additional_context or {}
+                "additional_context": additional_context or {},
+                "correlation_id": correlation_id
             }
             
-            return ProcessedContent(
+            result = ProcessedContent(
                 structured_data=structured_data,
                 entities=entities,
                 classification=classification,
@@ -218,9 +277,63 @@ class ContentProcessor:
                 processing_metadata=processing_metadata
             )
             
+            logger.info(
+                f"AI content processing completed successfully",
+                extra={
+                    "url": url,
+                    "confidence_score": confidence_score,
+                    "entities_found": len(entities),
+                    "correlation_id": correlation_id
+                }
+            )
+            
+            return result
+            
         except Exception as e:
-            logger.error(f"AI content processing failed: {e}")
-            return await self._fallback_processing(raw_content, content_type, url)
+            # Convert generic exceptions to specific ones
+            if isinstance(e, (ContentProcessingException, AIServiceException)):
+                raise e
+            else:
+                processing_error = ContentProcessingException(
+                    f"AI content processing failed: {str(e)}",
+                    processing_stage="main_processing",
+                    content_length=len(raw_content)
+                )
+                
+                await notify_error(
+                    processing_error,
+                    "ai_content_processor",
+                    context={
+                        "url": url,
+                        "content_type": content_type.value,
+                        "original_error": str(e)
+                    },
+                    correlation_id=correlation_id
+                )
+                
+                raise processing_error
+    
+    async def _safe_analyze_text(self, analyzer, content: str, url: str) -> Dict[str, Any]:
+        """Safely analyze text with error handling."""
+        try:
+            return await analyzer.analyze_text(content, url)
+        except Exception as e:
+            raise ContentProcessingException(
+                f"Text analysis failed: {str(e)}",
+                processing_stage="text_analysis",
+                content_length=len(content)
+            )
+    
+    async def _safe_extract_structure(self, extractor, content: str, content_type: ContentType, url: str) -> Dict[str, Any]:
+        """Safely extract structure with error handling."""
+        try:
+            return await extractor.extract_structure(content, content_type, url)
+        except Exception as e:
+            raise ContentProcessingException(
+                f"Structure extraction failed: {str(e)}",
+                processing_stage="structure_extraction",
+                content_length=len(content)
+            )
     
     async def _fallback_processing(
         self,
@@ -399,3 +512,13 @@ class ContentProcessor:
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat()
             }
+    
+    def _register_fallback_functions(self) -> None:
+        """Register fallback functions for error recovery."""
+        # Register fallback for AI content processing
+        recovery_manager.register_fallback(
+            "ai_content_processing",
+            self._fallback_processing
+        )
+        
+        logger.info("Registered AI processing fallback functions")

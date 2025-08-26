@@ -24,7 +24,7 @@ known_first_party = ["src"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --strict-markers --cov=src --cov-report=term-missing --cov-report=html"
+addopts = "-ra -q --strict-markers --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=90"
 testpaths = [
     "tests",
 ]
@@ -38,6 +38,20 @@ python_classes = [
 python_functions = [
     "test_*",
 ]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests", 
+    "performance: Performance tests",
+    "e2e: End-to-end tests",
+    "slow: Slow running tests",
+    "requires_network: Tests that require network access",
+    "requires_redis: Tests that require Redis",
+    "requires_database: Tests that require database",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["src"]
@@ -45,9 +59,18 @@ omit = [
     "*/tests/*",
     "*/test_*",
     "*/__init__.py",
+    "*/migrations/*",
+    "*/venv/*",
+    "*/env/*",
 ]
+branch = true
+parallel = true
 
 [tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+fail_under = 90
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
@@ -59,4 +82,13 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "class .*\\bProtocol\\):",
     "@(abc\\.)?abstractmethod",
+    "except ImportError:",
+    "except ModuleNotFoundError:",
 ]
+
+[tool.coverage.html]
+directory = "htmlcov"
+title = "AI Web Scraper Test Coverage Report"
+
+[tool.coverage.xml]
+output = "coverage.xml"

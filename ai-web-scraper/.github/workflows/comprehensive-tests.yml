@@ -1,0 +1,343 @@
+name: Comprehensive Test Suite
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.9, 3.10, 3.11, 3.12]
+        test-type: [unit, integration, performance]
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_USER: test_user
+          POSTGRES_DB: test_webscraper
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          chromium-browser \
+          chromium-chromedriver \
+          postgresql-client \
+          redis-tools
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-xdist pytest-benchmark pytest-mock
+    
+    - name: Set up environment variables
+      run: |
+        echo "DATABASE_URL=${{ secrets.TEST_DATABASE_URL }}" >> $GITHUB_ENV
+        echo "REDIS_URL=${{ secrets.TEST_REDIS_URL }}" >> $GITHUB_ENV
+        echo "GEMINI_API_KEY=${{ secrets.TEST_GEMINI_API_KEY }}" >> $GITHUB_ENV
+        echo "SECRET_KEY=test-secret-key-for-ci" >> $GITHUB_ENV
+        echo "ENVIRONMENT=test" >> $GITHUB_ENV
+    
+    - name: Wait for services
+      run: |
+        # Wait for PostgreSQL
+        until pg_isready -h localhost -p 5432 -U test_user; do
+          echo "Waiting for PostgreSQL..."
+          sleep 2
+        done
+        
+        # Wait for Redis
+        until redis-cli -h localhost -p 6379 ping; do
+          echo "Waiting for Redis..."
+          sleep 2
+        done
+    
+    - name: Set up database
+      run: |
+        python -m alembic upgrade head
+      env:
+        DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+    
+    - name: Run unit tests
+      if: matrix.test-type == 'unit'
+      run: |
+        python -m pytest tests/unit/ \
+          --cov=src \
+          --cov-report=xml:coverage-unit.xml \
+          --cov-report=html:htmlcov/unit \
+          --junit-xml=junit-unit.xml \
+          -v \
+          --tb=short \
+          -n auto
+    
+    - name: Run integration tests
+      if: matrix.test-type == 'integration'
+      run: |
+        python -m pytest tests/integration/ \
+          --cov=src \
+          --cov-report=xml:coverage-integration.xml \
+          --cov-report=html:htmlcov/integration \
+          --junit-xml=junit-integration.xml \
+          -v \
+          --tb=short \
+          -m "integration"
+    
+    - name: Run performance tests
+      if: matrix.test-type == 'performance'
+      run: |
+        python -m pytest tests/performance/ \
+          --cov=src \
+          --cov-report=xml:coverage-performance.xml \
+          --cov-report=html:htmlcov/performance \
+          --junit-xml=junit-performance.xml \
+          --benchmark-only \
+          --benchmark-json=benchmark-results.json \
+          -v \
+          --tb=short \
+          -m "performance"
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage-${{ matrix.test-type }}.xml
+        flags: ${{ matrix.test-type }}
+        name: codecov-${{ matrix.python-version }}-${{ matrix.test-type }}
+        fail_ci_if_error: false
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.python-version }}-${{ matrix.test-type }}
+        path: |
+          junit-*.xml
+          htmlcov/
+          benchmark-results.json
+        retention-days: 30
+    
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: coverage-${{ matrix.python-version }}-${{ matrix.test-type }}
+        path: |
+          coverage-*.xml
+          htmlcov/
+        retention-days: 30
+
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black isort flake8 bandit safety mypy
+        pip install -r requirements.txt
+    
+    - name: Run Black
+      run: black --check --diff src/ tests/
+    
+    - name: Run isort
+      run: isort --check-only --diff src/ tests/
+    
+    - name: Run flake8
+      run: flake8 src/ tests/ --max-line-length=88 --extend-ignore=E203,W503
+    
+    - name: Run mypy
+      run: mypy src/ --ignore-missing-imports --no-strict-optional
+    
+    - name: Run Bandit security check
+      run: bandit -r src/ -f json -o bandit-report.json
+      continue-on-error: true
+    
+    - name: Run Safety check
+      run: safety check --json --output safety-report.json
+      continue-on-error: true
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+        retention-days: 30
+
+  comprehensive-test:
+    runs-on: ubuntu-latest
+    needs: [test, code-quality]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_USER: test_user
+          POSTGRES_DB: test_webscraper
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y chromium-browser chromium-chromedriver
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Set up environment
+      run: |
+        echo "DATABASE_URL=${{ secrets.TEST_DATABASE_URL }}" >> $GITHUB_ENV
+        echo "REDIS_URL=${{ secrets.TEST_REDIS_URL }}" >> $GITHUB_ENV
+        echo "GEMINI_API_KEY=${{ secrets.TEST_GEMINI_API_KEY }}" >> $GITHUB_ENV
+        echo "SECRET_KEY=test-secret-key-for-ci" >> $GITHUB_ENV
+        echo "ENVIRONMENT=test" >> $GITHUB_ENV
+    
+    - name: Run comprehensive test suite
+      run: |
+        python tests/run_comprehensive_tests.py --all --verbose --report
+    
+    - name: Generate final coverage report
+      run: |
+        python -m coverage combine
+        python -m coverage report --show-missing
+        python -m coverage html --directory=htmlcov/final
+        python -m coverage xml -o coverage-final.xml
+    
+    - name: Upload comprehensive results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: comprehensive-test-results
+        path: |
+          test-report.md
+          htmlcov/final/
+          coverage-final.xml
+        retention-days: 90
+    
+    - name: Comment PR with test results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          if (fs.existsSync('test-report.md')) {
+            const report = fs.readFileSync('test-report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## Test Results\n\n' + report
+            });
+          }
+
+  performance-benchmark:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-benchmark
+    
+    - name: Run performance benchmarks
+      run: |
+        python -m pytest tests/performance/ \
+          --benchmark-only \
+          --benchmark-json=benchmark-results.json \
+          --benchmark-compare-fail=min:5% \
+          --benchmark-compare-fail=mean:10%
+    
+    - name: Store benchmark result
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        tool: 'pytest'
+        output-file-path: benchmark-results.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        comment-on-alert: true
+        alert-threshold: '200%'
+        fail-on-alert: true
