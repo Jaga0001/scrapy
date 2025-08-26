@@ -16,10 +16,11 @@ from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 
-from src.api.routes import jobs, data, health
+from src.api.routes import jobs, data, health, auth
 from src.api.middleware.auth import AuthMiddleware
 from src.api.middleware.logging import LoggingMiddleware
 from src.api.middleware.rate_limit import RateLimitMiddleware
+from src.api.middleware.validation import ValidationMiddleware
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -81,16 +82,23 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     
-    # Add custom middleware
-    app.add_middleware(LoggingMiddleware)
-    app.add_middleware(RateLimitMiddleware)
+    # Add custom middleware (order matters - last added is executed first)
     app.add_middleware(AuthMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(ValidationMiddleware)
+    app.add_middleware(LoggingMiddleware)
     
     # Include routers
     app.include_router(
         health.router,
         prefix="/api/v1/health",
         tags=["Health Check"]
+    )
+    
+    app.include_router(
+        auth.router,
+        prefix="/api/v1/auth",
+        tags=["Authentication"]
     )
     
     app.include_router(

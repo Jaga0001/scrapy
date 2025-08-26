@@ -32,6 +32,67 @@ class ContentType(str, Enum):
     DOCUMENT = "document"
 
 
+class UserRole(str, Enum):
+    """Enumeration of user roles."""
+    ADMIN = "admin"
+    USER = "user"
+    VIEWER = "viewer"
+
+
+class User(BaseModel):
+    """User model for authentication and authorization."""
+    
+    user_id: str = Field(..., description="Unique user identifier")
+    username: str = Field(..., min_length=3, max_length=50, description="Username")
+    email: str = Field(..., description="User email address")
+    full_name: Optional[str] = Field(default=None, max_length=100, description="Full name")
+    roles: List[UserRole] = Field(default=[UserRole.USER], description="User roles")
+    is_active: bool = Field(default=True, description="Whether user is active")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="User creation timestamp")
+    last_login: Optional[datetime] = Field(default=None, description="Last login timestamp")
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v):
+        """Validate email format."""
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, v):
+            raise ValueError("Invalid email format")
+        return v.lower()
+    
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v):
+        """Validate username format."""
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', v):
+            raise ValueError("Username can only contain letters, numbers, underscores, and hyphens")
+        return v.lower()
+
+
+class JWTPayload(BaseModel):
+    """JWT token payload model for validation."""
+    
+    user_id: str = Field(..., description="User ID")
+    username: str = Field(..., description="Username")
+    email: Optional[str] = Field(default=None, description="User email")
+    full_name: Optional[str] = Field(default=None, description="Full name")
+    roles: List[str] = Field(default=["user"], description="User roles")
+    exp: int = Field(..., description="Token expiration timestamp")
+    iat: int = Field(..., description="Token issued at timestamp")
+    type: str = Field(..., pattern="^(access|refresh)$", description="Token type")
+    
+    @field_validator('exp')
+    @classmethod
+    def validate_expiration(cls, v):
+        """Validate token is not expired."""
+        import time
+        if v < time.time():
+            raise ValueError("Token has expired")
+        return v
+
+
 class ScrapingConfig(BaseModel):
     """Configuration model for scraping operations."""
     

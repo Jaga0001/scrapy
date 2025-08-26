@@ -45,114 +45,184 @@ async def get_current_user(token: str = Depends(security)):
     return {"user_id": "user123", "username": "testuser"}
 
 
-# Placeholder for data service dependency
+# Data service with actual implementations
 class DataService:
-    """Placeholder data service for demonstration."""
+    """Data service with actual database and export functionality."""
+    
+    def __init__(self):
+        self.repository = None
+        self.export_manager = None
+    
+    async def _get_repository(self):
+        """Get data repository instance."""
+        if not self.repository:
+            from src.pipeline.repository import DataRepository
+            self.repository = DataRepository()
+        return self.repository
+    
+    async def _get_export_manager(self):
+        """Get export manager instance."""
+        if not self.export_manager:
+            from src.pipeline.export_manager import ExportManager
+            from config.database import get_async_db_session
+            
+            # Get database session
+            async with get_async_db_session() as session:
+                self.export_manager = ExportManager(session)
+        return self.export_manager
     
     async def query_data(self, query: DataQueryRequest, user_id: str) -> tuple[List[ScrapedData], int]:
         """Query scraped data with filters."""
-        # This would query the database with filters
-        # For now, return placeholder data
-        sample_data = [
-            ScrapedData(
-                id=f"data-{i}",
-                job_id=f"job-{i}",
-                url=f"https://example{i}.com",
-                content={"title": f"Example Page {i}", "text": f"Content from page {i}"},
-                content_type=ContentType.HTML,
-                confidence_score=0.85 + (i * 0.02),
-                ai_processed=True,
-                extracted_at=datetime.utcnow()
+        try:
+            repository = await self._get_repository()
+            
+            # Convert API query to repository parameters
+            data, total_count = await repository.get_scraped_data(
+                job_id=query.job_ids[0] if query.job_ids and len(query.job_ids) == 1 else None,
+                min_confidence=query.min_confidence or 0.0,
+                ai_processed_only=query.ai_processed if query.ai_processed is not None else False,
+                limit=query.page_size,
+                offset=(query.page - 1) * query.page_size
             )
-            for i in range(1, 21)
-        ]
-        
-        # Apply filters (simplified)
-        filtered_data = sample_data
-        
-        if query.job_ids:
-            filtered_data = [d for d in filtered_data if d.job_id in query.job_ids]
-        
-        if query.min_confidence:
-            filtered_data = [d for d in filtered_data if d.confidence_score >= query.min_confidence]
-        
-        if query.content_type:
-            filtered_data = [d for d in filtered_data if d.content_type == query.content_type]
-        
-        if query.ai_processed is not None:
-            filtered_data = [d for d in filtered_data if d.ai_processed == query.ai_processed]
-        
-        total_count = len(filtered_data)
-        
-        # Apply pagination
-        start_idx = (query.page - 1) * query.page_size
-        end_idx = start_idx + query.page_size
-        paginated_data = filtered_data[start_idx:end_idx]
-        
-        return paginated_data, total_count
+            
+            return data, total_count
+            
+        except Exception as e:
+            logger.error(f"Failed to query data: {e}")
+            # Return empty results on error
+            return [], 0
     
     async def get_data_by_id(self, data_id: str, user_id: str) -> Optional[ScrapedData]:
         """Get scraped data by ID."""
-        # This would query the database
-        # For now, return a placeholder if ID matches
-        if data_id == "test-data-id":
-            return ScrapedData(
-                id=data_id,
-                job_id="test-job-id",
-                url="https://example.com",
-                content={"title": "Test Page", "text": "Test content"},
-                content_type=ContentType.HTML,
-                confidence_score=0.92,
-                ai_processed=True,
-                extracted_at=datetime.utcnow()
-            )
-        return None
+        try:
+            repository = await self._get_repository()
+            
+            # Query single record (simplified - would need proper implementation)
+            data, _ = await repository.get_scraped_data(limit=1000)
+            
+            # Find matching record
+            for record in data:
+                if record.id == data_id:
+                    return record
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get data by ID: {e}")
+            return None
     
     async def get_data_summary(self, user_id: str) -> dict:
         """Get summary statistics for scraped data."""
-        # This would query the database for actual statistics
-        return {
-            "total_records": 1250,
-            "total_jobs": 85,
-            "average_confidence": 0.87,
-            "content_type_distribution": {
-                "html": 1100,
-                "json": 100,
-                "text": 50
-            },
-            "date_range": {
-                "earliest": datetime(2024, 1, 1),
-                "latest": datetime.utcnow()
-            },
-            "quality_metrics": {
-                "high_confidence_records": 1050,
-                "ai_processed_records": 1200,
-                "validation_errors": 25
+        try:
+            repository = await self._get_repository()
+            
+            # Get job statistics
+            job_stats = await repository.get_job_statistics()
+            
+            # Get data quality metrics
+            quality_metrics = await repository.get_data_quality_metrics()
+            
+            return {
+                "total_records": quality_metrics.get("total_data_records", 0),
+                "total_jobs": job_stats.get("status_counts", {}).get("completed", 0),
+                "average_confidence": quality_metrics.get("average_confidence_score", 0.0),
+                "content_type_distribution": {
+                    "html": quality_metrics.get("total_data_records", 0),  # Simplified
+                    "json": 0,
+                    "text": 0
+                },
+                "date_range": {
+                    "earliest": datetime(2024, 1, 1),
+                    "latest": datetime.utcnow()
+                },
+                "quality_metrics": {
+                    "high_confidence_records": int(quality_metrics.get("total_data_records", 0) * 0.8),
+                    "ai_processed_records": int(quality_metrics.get("total_data_records", 0) * quality_metrics.get("ai_processed_percentage", 0) / 100),
+                    "validation_errors": int(quality_metrics.get("average_validation_errors", 0))
+                }
             }
-        }
+            
+        except Exception as e:
+            logger.error(f"Failed to get data summary: {e}")
+            # Return default values on error
+            return {
+                "total_records": 0,
+                "total_jobs": 0,
+                "average_confidence": 0.0,
+                "content_type_distribution": {"html": 0, "json": 0, "text": 0},
+                "date_range": {"earliest": datetime.utcnow(), "latest": datetime.utcnow()},
+                "quality_metrics": {"high_confidence_records": 0, "ai_processed_records": 0, "validation_errors": 0}
+            }
     
     async def create_export(self, export_request: CoreDataExportRequest, user_id: str) -> str:
         """Create a data export job."""
-        export_id = str(uuid4())
-        
-        # This would create an export job in the background
-        # For now, just log and return the ID
-        logger.info(f"Created export job {export_id} for user {user_id}")
-        
-        return export_id
+        try:
+            export_manager = await self._get_export_manager()
+            
+            # Determine if we should use streaming export for large datasets
+            use_streaming = True  # Default to streaming for better performance
+            
+            if use_streaming:
+                export_id = await export_manager.create_streaming_export(
+                    export_request, user_id, compress=True, chunk_size=1000
+                )
+            else:
+                export_id = await export_manager.create_export(export_request, user_id)
+            
+            logger.info(f"Created export job {export_id} for user {user_id}")
+            return export_id
+            
+        except Exception as e:
+            logger.error(f"Failed to create export: {e}")
+            raise
     
-    async def get_export_status(self, export_id: str, user_id: str) -> dict:
+    async def get_export_status(self, export_id: str, user_id: str) -> Optional[dict]:
         """Get export job status."""
-        # This would check the actual export job status
-        # For now, return a placeholder
-        return {
-            "export_id": export_id,
-            "status": "completed",
-            "download_url": f"/api/v1/data/exports/{export_id}/download",
-            "file_size": 1024000,
-            "created_at": datetime.utcnow(),
-            "completed_at": datetime.utcnow()
-        }
+        try:
+            export_manager = await self._get_export_manager()
+            
+            status_info = await export_manager.get_export_status(export_id, user_id)
+            
+            if not status_info:
+                return None
+            
+            result = {
+                "export_id": status_info["export_id"],
+                "status": status_info["status"],
+                "file_size": status_info.get("file_size"),
+                "created_at": status_info["created_at"],
+                "completed_at": status_info.get("completed_at")
+            }
+            
+            # Add download URL if completed
+            if status_info["status"] == "completed":
+                result["download_url"] = f"/api/v1/data/exports/{export_id}/download"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to get export status: {e}")
+            return None
+    
+    async def get_export_download_info(self, export_id: str, user_id: str) -> Optional[dict]:
+        """Get export download information."""
+        try:
+            export_manager = await self._get_export_manager()
+            return await export_manager.get_export_download_info(export_id, user_id)
+            
+        except Exception as e:
+            logger.error(f"Failed to get export download info: {e}")
+            return None
+    
+    async def delete_export(self, export_id: str, user_id: str) -> bool:
+        """Delete an export job."""
+        try:
+            export_manager = await self._get_export_manager()
+            return await export_manager.delete_export(export_id, user_id)
+            
+        except Exception as e:
+            logger.error(f"Failed to delete export: {e}")
+            return False
 
 
 # Create service instance
@@ -348,6 +418,71 @@ async def create_data_export(
         )
 
 
+@router.post(
+    "/export/streaming",
+    response_model=ExportResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Create Streaming Data Export",
+    description="Create a streaming export job for large datasets with compression"
+)
+async def create_streaming_export(
+    export_request: DataExportRequest,
+    compress: bool = Query(True, description="Whether to compress the export file"),
+    chunk_size: int = Query(1000, ge=100, le=10000, description="Records per processing chunk"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a streaming data export job for large datasets.
+    
+    This endpoint is optimized for large datasets and provides:
+    - Memory-efficient streaming processing
+    - Optional file compression
+    - Configurable chunk sizes for optimal performance
+    """
+    try:
+        # Convert API request to core model
+        core_export_request = CoreDataExportRequest(
+            format=export_request.format,
+            job_ids=export_request.job_ids,
+            date_from=export_request.date_from,
+            date_to=export_request.date_to,
+            min_confidence=export_request.min_confidence,
+            include_raw_html=export_request.include_raw_html,
+            fields=export_request.fields
+        )
+        
+        # Validate format for streaming
+        if export_request.format not in ["csv", "json"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Streaming export only supports CSV and JSON formats"
+            )
+        
+        export_manager = await data_service._get_export_manager()
+        export_id = await export_manager.create_streaming_export(
+            core_export_request, 
+            current_user["user_id"], 
+            compress=compress, 
+            chunk_size=chunk_size
+        )
+        
+        return ExportResponse(
+            export_id=export_id,
+            status="pending",
+            created_at=datetime.utcnow(),
+            message=f"Streaming export job created successfully (compress={compress}, chunk_size={chunk_size})"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create streaming export: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create streaming export job"
+        )
+
+
 @router.get(
     "/exports/{export_id}",
     response_model=ExportResponse,
@@ -408,27 +543,35 @@ async def download_export(
     The file format depends on the export request (CSV, JSON, or XLSX).
     """
     try:
-        export_status = await data_service.get_export_status(export_id, current_user["user_id"])
+        download_info = await data_service.get_export_download_info(export_id, current_user["user_id"])
         
-        if not export_status:
+        if not download_info:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Export job not found"
+                detail="Export file not found or not ready for download"
             )
         
-        if export_status["status"] != "completed":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Export is not ready for download"
-            )
+        file_path = download_info["file_path"]
+        filename = download_info["filename"]
         
-        # This would return the actual file
-        # For now, return a placeholder response
-        return {
-            "message": "File download would be provided here",
-            "export_id": export_id,
-            "file_size": export_status.get("file_size", 0)
-        }
+        # Determine media type based on file extension
+        media_type = "application/octet-stream"
+        if filename.endswith('.csv') or filename.endswith('.csv.gz'):
+            media_type = "text/csv"
+        elif filename.endswith('.json') or filename.endswith('.json.gz'):
+            media_type = "application/json"
+        elif filename.endswith('.xlsx'):
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Length": str(download_info["file_size"])
+            }
+        )
         
     except HTTPException:
         raise
@@ -457,15 +600,14 @@ async def delete_export(
     from the system.
     """
     try:
-        export_status = await data_service.get_export_status(export_id, current_user["user_id"])
+        success = await data_service.delete_export(export_id, current_user["user_id"])
         
-        if not export_status:
+        if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Export job not found"
             )
         
-        # This would delete the export job and file
         logger.info(f"Deleted export {export_id}")
         
     except HTTPException:

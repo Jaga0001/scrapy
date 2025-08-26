@@ -34,7 +34,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/api/v1/health/",
         "/api/v1/health/liveness",
         "/api/v1/health/readiness",
-        "/api/v1/health/version"
+        "/api/v1/health/version",
+        "/api/v1/auth/login",
+        "/api/v1/auth/register",
+        "/api/v1/auth/refresh"
     }
     
     def __init__(self, app):
@@ -127,23 +130,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
             Optional[dict]: User information if token is valid
         """
         try:
-            # This would use actual JWT validation
-            # For now, return placeholder user info for demo tokens
-            if token in ["demo-token", "test-token"]:
-                return {
-                    "user_id": "user123",
-                    "username": "testuser",
-                    "email": "test@example.com",
-                    "roles": ["user"],
-                    "exp": int(time.time()) + 3600  # 1 hour from now
-                }
+            # Use the global JWT manager for validation
+            payload = get_jwt_manager().validate_token(token)
             
-            # In a real implementation, you would:
-            # 1. Decode the JWT token
-            # 2. Verify the signature
-            # 3. Check expiration
-            # 4. Validate issuer and audience
-            # 5. Return user information
+            if payload and payload.get("type") == "access":
+                # Check if token is expired
+                exp = payload.get("exp", 0)
+                if exp < time.time():
+                    logger.warning("Token has expired")
+                    return None
+                
+                return {
+                    "user_id": payload.get("user_id"),
+                    "username": payload.get("username"),
+                    "email": payload.get("email"),
+                    "roles": payload.get("roles", ["user"]),
+                    "exp": exp
+                }
             
             return None
             
@@ -217,20 +220,20 @@ class JWTManager:
             str: JWT access token
         """
         try:
-            import jwt
-            from datetime import datetime, timedelta
+            from jose import jwt
+            from datetime import datetime, timedelta, timezone
             
             payload = {
                 **user_data,
-                "exp": datetime.utcnow() + timedelta(seconds=expires_delta),
-                "iat": datetime.utcnow(),
+                "exp": datetime.now(timezone.utc) + timedelta(seconds=expires_delta),
+                "iat": datetime.now(timezone.utc),
                 "type": "access"
             }
             
             return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
             
         except ImportError:
-            logger.error("PyJWT not installed - using placeholder token")
+            logger.error("python-jose not installed - using placeholder token")
             return "placeholder-token"
         except Exception as e:
             logger.error(f"Failed to create access token: {e}")
@@ -248,20 +251,20 @@ class JWTManager:
             str: JWT refresh token
         """
         try:
-            import jwt
-            from datetime import datetime, timedelta
+            from jose import jwt
+            from datetime import datetime, timedelta, timezone
             
             payload = {
                 "user_id": user_id,
-                "exp": datetime.utcnow() + timedelta(seconds=expires_delta),
-                "iat": datetime.utcnow(),
+                "exp": datetime.now(timezone.utc) + timedelta(seconds=expires_delta),
+                "iat": datetime.now(timezone.utc),
                 "type": "refresh"
             }
             
             return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
             
         except ImportError:
-            logger.error("PyJWT not installed - using placeholder token")
+            logger.error("python-jose not installed - using placeholder token")
             return "placeholder-refresh-token"
         except Exception as e:
             logger.error(f"Failed to create refresh token: {e}")
@@ -278,7 +281,7 @@ class JWTManager:
             Optional[dict]: Decoded token payload if valid
         """
         try:
-            import jwt
+            from jose import jwt, JWTError
             
             payload = jwt.decode(
                 token, 
@@ -289,7 +292,7 @@ class JWTManager:
             return payload
             
         except ImportError:
-            logger.error("PyJWT not installed - using placeholder validation")
+            logger.error("python-jose not installed - using placeholder validation")
             # Return placeholder for demo tokens
             if token in ["demo-token", "test-token"]:
                 return {
@@ -297,6 +300,9 @@ class JWTManager:
                     "username": "testuser",
                     "type": "access"
                 }
+            return None
+        except JWTError as e:
+            logger.warning(f"JWT validation failed: {e}")
             return None
         except Exception as e:
             logger.warning(f"Token validation failed: {e}")
@@ -333,5 +339,17 @@ class JWTManager:
             return None
 
 
-# Global JWT manager instance (would be configured with actual secret)
-jwt_manager = JWTManager("your-secret-key-here")
+# Global JWT manager instance
+def get_jwt_manager() -> JWTManager:
+    """Get JWT manager with configuration from environment."""
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    
+    secret_key = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+    algorithm = os.getenv("JWT_ALGORITHM", "HS256")
+    
+    return JWTManager(secret_key, algorithm)
+
+jwt_manager = get_jwt_manager()

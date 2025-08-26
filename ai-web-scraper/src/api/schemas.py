@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.models.pydantic_models import (
     JobStatus, ContentType, ScrapingConfig, ScrapingJob, 
-    ScrapedData, DataExportRequest
+    ScrapedData, User, UserRole, JWTPayload
 )
 
 
@@ -113,6 +113,26 @@ class DataQueryRequest(BaseModel):
         return v
 
 
+class DataExportRequest(BaseModel):
+    """Request schema for data export operations."""
+    
+    format: str = Field(..., pattern="^(csv|json|xlsx)$", description="Export format")
+    job_ids: Optional[List[str]] = Field(default=None, description="Specific job IDs to export")
+    date_from: Optional[datetime] = Field(default=None, description="Start date for data range")
+    date_to: Optional[datetime] = Field(default=None, description="End date for data range")
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Minimum confidence score")
+    include_raw_html: bool = Field(default=False, description="Include raw HTML in export")
+    fields: Optional[List[str]] = Field(default=None, description="Specific fields to include")
+    
+    @field_validator('date_to')
+    @classmethod
+    def validate_date_range(cls, v, info):
+        """Validate date range is logical."""
+        if v and info.data.get('date_from') and v < info.data['date_from']:
+            raise ValueError("date_to must be after date_from")
+        return v
+
+
 class BulkJobRequest(BaseModel):
     """Request schema for creating multiple scraping jobs."""
     
@@ -189,10 +209,14 @@ class ExportResponse(BaseModel):
     
     export_id: str
     status: str
+    format: Optional[str] = None
     download_url: Optional[str] = None
     file_size: Optional[int] = None
+    filename: Optional[str] = None
     created_at: datetime
+    completed_at: Optional[datetime] = None
     estimated_completion: Optional[datetime] = None
+    error_message: Optional[str] = None
     message: str = "Export request processed"
 
 
@@ -252,6 +276,32 @@ class SystemStatsResponse(BaseModel):
 
 
 # Authentication schemas
+class LoginRequest(BaseModel):
+    """Request schema for user login."""
+    
+    username: str = Field(..., min_length=3, max_length=50, description="Username")
+    password: str = Field(..., min_length=8, max_length=128, description="Password")
+    
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v):
+        """Validate username format."""
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', v):
+            raise ValueError("Username can only contain letters, numbers, underscores, and hyphens")
+        return v.lower()
+
+
+class LoginResponse(BaseModel):
+    """Response schema for successful login."""
+    
+    access_token: str = Field(..., description="JWT access token")
+    refresh_token: str = Field(..., description="JWT refresh token")
+    token_type: str = Field(default="bearer", description="Token type")
+    expires_in: int = Field(..., description="Token expiration time in seconds")
+    user: User = Field(..., description="User information")
+
+
 class TokenRequest(BaseModel):
     """Request schema for authentication token."""
     
@@ -272,6 +322,80 @@ class RefreshTokenRequest(BaseModel):
     """Request schema for token refresh."""
     
     refresh_token: str = Field(..., description="Refresh token")
+
+
+class RefreshTokenResponse(BaseModel):
+    """Response schema for token refresh."""
+    
+    access_token: str = Field(..., description="New JWT access token")
+    token_type: str = Field(default="bearer", description="Token type")
+    expires_in: int = Field(..., description="Token expiration time in seconds")
+
+
+class UserRegistrationRequest(BaseModel):
+    """Request schema for user registration."""
+    
+    username: str = Field(..., min_length=3, max_length=50, description="Username")
+    email: str = Field(..., description="Email address")
+    password: str = Field(..., min_length=8, max_length=128, description="Password")
+    full_name: Optional[str] = Field(default=None, max_length=100, description="Full name")
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v):
+        """Validate email format."""
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, v):
+            raise ValueError("Invalid email format")
+        return v.lower()
+    
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v):
+        """Validate username format."""
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', v):
+            raise ValueError("Username can only contain letters, numbers, underscores, and hyphens")
+        return v.lower()
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        """Validate password strength."""
+        import re
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+        if not re.search(r'[A-Z]', v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r'[a-z]', v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r'\d', v):
+            raise ValueError("Password must contain at least one digit")
+        return v
+
+
+class UserResponse(BaseModel):
+    """Response schema for user information."""
+    
+    user_id: str = Field(..., description="User ID")
+    username: str = Field(..., description="Username")
+    email: str = Field(..., description="Email address")
+    full_name: Optional[str] = Field(default=None, description="Full name")
+    roles: List[str] = Field(..., description="User roles")
+    is_active: bool = Field(..., description="Whether user is active")
+    created_at: datetime = Field(..., description="User creation timestamp")
+    last_login: Optional[datetime] = Field(default=None, description="Last login timestamp")
+
+
+class TokenValidationResponse(BaseModel):
+    """Response schema for token validation."""
+    
+    valid: bool = Field(..., description="Whether token is valid")
+    token_type: Optional[str] = Field(default=None, description="Token type")
+    user_id: Optional[str] = Field(default=None, description="User ID")
+    username: Optional[str] = Field(default=None, description="Username")
+    expires_at: Optional[int] = Field(default=None, description="Token expiration timestamp")
 
 
 # Webhook schemas

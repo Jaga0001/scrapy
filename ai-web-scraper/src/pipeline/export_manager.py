@@ -11,10 +11,12 @@ import json
 import logging
 import os
 import tempfile
+import gzip
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, AsyncGenerator
 from uuid import uuid4
 import zipfile
+from io import StringIO, BytesIO
 
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -590,3 +592,390 @@ class ExportManager:
             self.logger.error(f"Failed to cleanup old exports: {e}")
             await self.db_session.rollback()
             return 0
+
+    # ==================== Streaming Export Methods ====================
+    
+    async def stream_export_data(
+        self,
+        export_request: DataExportRequest,
+        chunk_size: int = 1000
+    ) -> AsyncGenerator[List[ScrapedData], None]:
+        """
+        Stream scraped data in chunks for large dataset exports.
+        
+        Args:
+            export_request: Export configuration with filters
+            chunk_size: Number of records per chunk
+            
+        Yields:
+            Chunks of ScrapedData instances
+        """
+        try:
+            from sqlalchemy import select, and_
+            
+            offset = 0
+            
+            while True:
+                # Build query with filters
+                query = select(ScrapedDataORM)
+                conditions = []
+                
+                # Filter by job IDs
+                if export_request.job_ids:
+                    conditions.append(ScrapedDataORM.job_id.in_(export_request.job_ids))
+                
+                # Filter by date range
+                if export_request.date_from:
+                    conditions.append(ScrapedDataORM.extracted_at >= export_request.date_from)
+                
+                if export_request.date_to:
+                    conditions.append(ScrapedDataORM.extracted_at <= export_request.date_to)
+                
+                # Filter by confidence score
+                if export_request.min_confidence > 0:
+                    conditions.append(ScrapedDataORM.confidence_score >= export_request.min_confidence)
+                
+                # Apply all conditions
+                if conditions:
+                    query = query.where(and_(*conditions))
+                
+                # Add pagination
+                query = (
+                    query
+                    .order_by(ScrapedDataORM.extracted_at)
+                    .limit(chunk_size)
+                    .offset(offset)
+                )
+                
+                # Execute query
+                result = await self.db_session.execute(query)
+                orm_data = result.scalars().all()
+                
+                if not orm_data:
+                    break
+                
+                # Convert to Pydantic models
+                scraped_data = []
+                for orm_item in orm_data:
+                    data_item = ScrapedData(
+                        id=orm_item.id,
+                        job_id=orm_item.job_id,
+                        url=orm_item.url,
+                        content=orm_item.content,
+                        raw_html=orm_item.raw_html,
+                        content_type=orm_item.content_type,
+                        content_metadata=orm_item.content_metadata,
+                        confidence_score=orm_item.confidence_score,
+                        ai_processed=orm_item.ai_processed,
+                        ai_metadata=orm_item.ai_metadata,
+                        data_quality_score=orm_item.data_quality_score,
+                        validation_errors=orm_item.validation_errors,
+                        extracted_at=orm_item.extracted_at,
+                        processed_at=orm_item.processed_at,
+                        content_length=orm_item.content_length,
+                        load_time=orm_item.load_time
+                    )
+                    scraped_data.append(data_item)
+                
+                yield scraped_data
+                
+                # Move to next chunk
+                offset += chunk_size
+                
+                # If we got fewer records than chunk_size, we're done
+                if len(orm_data) < chunk_size:
+                    break
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to stream export data: {e}")
+            raise
+    
+    async def create_streaming_export(
+        self,
+        export_request: DataExportRequest,
+        user_id: str,
+        compress: bool = True,
+        chunk_size: int = 1000
+    ) -> str:
+        """
+        Create a streaming export for large datasets with compression.
+        
+        Args:
+            export_request: Export configuration and filters
+            user_id: ID of the user requesting the export
+            compress: Whether to compress the output file
+            chunk_size: Number of records to process at once
+            
+        Returns:
+            Export job ID
+        """
+        export_id = str(uuid4())
+        
+        try:
+            # Create export record in database
+            export_record = DataExportORM(
+                id=export_id,
+                format=export_request.format,
+                status="pending",
+                job_ids=export_request.job_ids or [],
+                date_from=export_request.date_from,
+                date_to=export_request.date_to,
+                min_confidence=export_request.min_confidence,
+                include_raw_html=export_request.include_raw_html,
+                fields=export_request.fields or [],
+                user_id=user_id,
+                requested_at=datetime.utcnow()
+            )
+            
+            self.db_session.add(export_record)
+            await self.db_session.commit()
+            
+            # Start streaming export processing in background
+            asyncio.create_task(
+                self._process_streaming_export(export_id, export_request, compress, chunk_size)
+            )
+            
+            self.logger.info(f"Created streaming export job {export_id} for user {user_id}")
+            return export_id
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create streaming export job: {e}")
+            await self.db_session.rollback()
+            raise
+    
+    async def _process_streaming_export(
+        self,
+        export_id: str,
+        export_request: DataExportRequest,
+        compress: bool,
+        chunk_size: int
+    ) -> None:
+        """
+        Process the streaming export job in the background.
+        
+        Args:
+            export_id: Export job ID
+            export_request: Export configuration
+            compress: Whether to compress the output
+            chunk_size: Records per chunk
+        """
+        try:
+            # Update status to processing
+            await self._update_export_status(export_id, "processing")
+            
+            # Generate filename
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            base_filename = f"export_{export_id}_{timestamp}.{export_request.format}"
+            
+            if compress:
+                file_path = os.path.join(self.export_dir, f"{base_filename}.gz")
+            else:
+                file_path = os.path.join(self.export_dir, base_filename)
+            
+            # Process export with streaming
+            total_records = 0
+            
+            if export_request.format == "csv":
+                total_records = await self._generate_streaming_csv(
+                    file_path, export_request, compress, chunk_size
+                )
+            elif export_request.format == "json":
+                total_records = await self._generate_streaming_json(
+                    file_path, export_request, compress, chunk_size
+                )
+            else:
+                raise ValueError(f"Streaming not supported for format: {export_request.format}")
+            
+            # Update export record with file information
+            file_size = os.path.getsize(file_path)
+            await self._update_export_completion(export_id, file_path, file_size)
+            
+            self.logger.info(
+                f"Streaming export {export_id} completed successfully. "
+                f"Processed {total_records} records, file size: {file_size} bytes"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Streaming export {export_id} failed: {e}")
+            await self._update_export_error(export_id, str(e))
+    
+    async def _generate_streaming_csv(
+        self,
+        file_path: str,
+        export_request: DataExportRequest,
+        compress: bool,
+        chunk_size: int
+    ) -> int:
+        """Generate CSV export file with streaming."""
+        total_records = 0
+        headers_written = False
+        
+        # Open file with optional compression
+        if compress:
+            file_obj = gzip.open(file_path, 'wt', encoding='utf-8', newline='')
+        else:
+            file_obj = open(file_path, 'w', encoding='utf-8', newline='')
+        
+        try:
+            writer = None
+            
+            async for data_chunk in self.stream_export_data(export_request, chunk_size):
+                if not data_chunk:
+                    continue
+                
+                # Prepare data for export
+                export_data = self._prepare_export_data(data_chunk, export_request)
+                
+                if not headers_written and export_data:
+                    # Get all unique keys for headers
+                    all_keys = set()
+                    for item in export_data:
+                        all_keys.update(item.keys())
+                    
+                    headers = sorted(all_keys)
+                    writer = csv.DictWriter(file_obj, fieldnames=headers)
+                    writer.writeheader()
+                    headers_written = True
+                
+                if writer:
+                    for item in export_data:
+                        # Ensure all fields are present
+                        row = {key: item.get(key, '') for key in writer.fieldnames}
+                        writer.writerow(row)
+                
+                total_records += len(data_chunk)
+                
+                # Log progress for large exports
+                if total_records % 10000 == 0:
+                    self.logger.info(f"Processed {total_records} records for streaming CSV export")
+        
+        finally:
+            file_obj.close()
+        
+        return total_records
+    
+    async def _generate_streaming_json(
+        self,
+        file_path: str,
+        export_request: DataExportRequest,
+        compress: bool,
+        chunk_size: int
+    ) -> int:
+        """Generate JSON export file with streaming."""
+        total_records = 0
+        
+        # Open file with optional compression
+        if compress:
+            file_obj = gzip.open(file_path, 'wt', encoding='utf-8')
+        else:
+            file_obj = open(file_path, 'w', encoding='utf-8')
+        
+        try:
+            # Write JSON structure start
+            export_metadata = {
+                "generated_at": datetime.utcnow().isoformat(),
+                "format": "json",
+                "compressed": compress
+            }
+            
+            file_obj.write('{\n')
+            file_obj.write(f'  "export_metadata": {json.dumps(export_metadata, indent=2)},\n')
+            file_obj.write('  "data": [\n')
+            
+            first_chunk = True
+            
+            async for data_chunk in self.stream_export_data(export_request, chunk_size):
+                if not data_chunk:
+                    continue
+                
+                # Prepare data for export
+                export_data = self._prepare_export_data(data_chunk, export_request)
+                
+                for i, item in enumerate(export_data):
+                    if not first_chunk or i > 0:
+                        file_obj.write(',\n')
+                    
+                    file_obj.write('    ')
+                    json.dump(item, file_obj, default=str, separators=(',', ':'))
+                    
+                    if first_chunk and i == 0:
+                        first_chunk = False
+                
+                total_records += len(data_chunk)
+                
+                # Log progress for large exports
+                if total_records % 10000 == 0:
+                    self.logger.info(f"Processed {total_records} records for streaming JSON export")
+            
+            # Close JSON structure
+            file_obj.write('\n  ]\n')
+            file_obj.write('}\n')
+            
+            # Update metadata with final record count
+            file_obj.seek(0)
+            content = file_obj.read()
+            updated_metadata = export_metadata.copy()
+            updated_metadata["total_records"] = total_records
+            
+            # Rewrite file with updated metadata
+            file_obj.seek(0)
+            file_obj.truncate()
+            
+            updated_content = content.replace(
+                json.dumps(export_metadata, indent=2),
+                json.dumps(updated_metadata, indent=2)
+            )
+            file_obj.write(updated_content)
+        
+        finally:
+            file_obj.close()
+        
+        return total_records
+    
+    async def get_export_download_info(
+        self, 
+        export_id: str, 
+        user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get download information for a completed export.
+        
+        Args:
+            export_id: Export job ID
+            user_id: User ID for authorization
+            
+        Returns:
+            Download information or None if not found/not ready
+        """
+        try:
+            from sqlalchemy import select
+            
+            query = select(DataExportORM).where(
+                DataExportORM.id == export_id,
+                DataExportORM.user_id == user_id,
+                DataExportORM.status == "completed"
+            )
+            
+            result = await self.db_session.execute(query)
+            export_record = result.scalar_one_or_none()
+            
+            if not export_record or not export_record.file_path:
+                return None
+            
+            if not os.path.exists(export_record.file_path):
+                self.logger.warning(f"Export file not found: {export_record.file_path}")
+                return None
+            
+            return {
+                "export_id": export_record.id,
+                "file_path": export_record.file_path,
+                "file_size": export_record.file_size,
+                "format": export_record.format,
+                "filename": os.path.basename(export_record.file_path),
+                "created_at": export_record.requested_at,
+                "completed_at": export_record.completed_at
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get export download info: {e}")
+            return None
