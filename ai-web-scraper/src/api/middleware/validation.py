@@ -15,6 +15,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import ValidationError
 
 from src.utils.logger import get_logger
+from src.utils.input_validator import security_validator
+from src.utils.audit_logger import audit_logger, AuditEventType, AuditSeverity
 
 logger = get_logger(__name__)
 
@@ -149,6 +151,16 @@ class ValidationMiddleware(BaseHTTPMiddleware):
             # Check for suspicious patterns
             if self._contains_suspicious_content(value):
                 logger.warning(f"Suspicious content in header {name}: {value[:100]}...")
+                
+                # Log security alert
+                audit_logger.log_security_alert(
+                    alert_type="suspicious_header",
+                    description=f"Suspicious content in header {name}",
+                    severity=AuditSeverity.MEDIUM,
+                    ip_address=request.client.host if request.client else None,
+                    metadata={"header_name": name, "suspicious_content": value[:100]}
+                )
+                
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid header content"
@@ -201,6 +213,16 @@ class ValidationMiddleware(BaseHTTPMiddleware):
         # Check for suspicious patterns in user agent
         if self._contains_suspicious_content(user_agent):
             logger.warning(f"Suspicious user agent: {user_agent[:100]}...")
+            
+            # Log security alert
+            audit_logger.log_security_alert(
+                alert_type="suspicious_user_agent",
+                description="Suspicious user agent detected",
+                severity=AuditSeverity.MEDIUM,
+                ip_address=request.client.host if request.client else None,
+                metadata={"user_agent": user_agent[:100]}
+            )
+            
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid user agent"
