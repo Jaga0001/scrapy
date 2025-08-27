@@ -201,3 +201,13 @@ logs/
 temp/
 cache/
 screenshots/
+
+# Security files
+config/secure_config.enc
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/

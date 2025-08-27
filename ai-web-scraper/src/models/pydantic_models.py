@@ -1,16 +1,13 @@
 """
 Pydantic models for data validation and serialization.
-
-This module contains the core Pydantic models used throughout the application
-for data validation, serialization, and API request/response handling.
 """
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import UUID, uuid4
-
 from pydantic import BaseModel, Field, field_validator, model_validator
+import re
 
 
 class JobStatus(str, Enum):
@@ -28,69 +25,6 @@ class ContentType(str, Enum):
     TEXT = "text"
     JSON = "json"
     XML = "xml"
-    IMAGE = "image"
-    DOCUMENT = "document"
-
-
-class UserRole(str, Enum):
-    """Enumeration of user roles."""
-    ADMIN = "admin"
-    USER = "user"
-    VIEWER = "viewer"
-
-
-class User(BaseModel):
-    """User model for authentication and authorization."""
-    
-    user_id: str = Field(..., description="Unique user identifier")
-    username: str = Field(..., min_length=3, max_length=50, description="Username")
-    email: str = Field(..., description="User email address")
-    full_name: Optional[str] = Field(default=None, max_length=100, description="Full name")
-    roles: List[UserRole] = Field(default=[UserRole.USER], description="User roles")
-    is_active: bool = Field(default=True, description="Whether user is active")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="User creation timestamp")
-    last_login: Optional[datetime] = Field(default=None, description="Last login timestamp")
-    
-    @field_validator('email')
-    @classmethod
-    def validate_email(cls, v):
-        """Validate email format."""
-        import re
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(email_pattern, v):
-            raise ValueError("Invalid email format")
-        return v.lower()
-    
-    @field_validator('username')
-    @classmethod
-    def validate_username(cls, v):
-        """Validate username format."""
-        import re
-        if not re.match(r'^[a-zA-Z0-9_-]+$', v):
-            raise ValueError("Username can only contain letters, numbers, underscores, and hyphens")
-        return v.lower()
-
-
-class JWTPayload(BaseModel):
-    """JWT token payload model for validation."""
-    
-    user_id: str = Field(..., description="User ID")
-    username: str = Field(..., description="Username")
-    email: Optional[str] = Field(default=None, description="User email")
-    full_name: Optional[str] = Field(default=None, description="Full name")
-    roles: List[str] = Field(default=["user"], description="User roles")
-    exp: int = Field(..., description="Token expiration timestamp")
-    iat: int = Field(..., description="Token issued at timestamp")
-    type: str = Field(..., pattern="^(access|refresh)$", description="Token type")
-    
-    @field_validator('exp')
-    @classmethod
-    def validate_expiration(cls, v):
-        """Validate token is not expired."""
-        import time
-        if v < time.time():
-            raise ValueError("Token has expired")
-        return v
 
 
 class ScrapingConfig(BaseModel):
@@ -112,16 +46,6 @@ class ScrapingConfig(BaseModel):
     follow_links: bool = Field(default=False, description="Follow and scrape linked pages")
     max_depth: int = Field(default=1, ge=1, le=5, description="Maximum depth for link following")
     
-    # Selectors and filters
-    custom_selectors: Dict[str, str] = Field(
-        default_factory=dict, 
-        description="Custom CSS selectors for specific data extraction"
-    )
-    exclude_selectors: List[str] = Field(
-        default_factory=list,
-        description="CSS selectors for elements to exclude"
-    )
-    
     # Rate limiting and politeness
     delay_between_requests: float = Field(
         default=1.0, ge=0.1, le=10.0,
@@ -129,25 +53,16 @@ class ScrapingConfig(BaseModel):
     )
     respect_robots_txt: bool = Field(default=True, description="Respect robots.txt rules")
     
-    # Advanced settings
-    javascript_enabled: bool = Field(default=True, description="Enable JavaScript execution")
-    load_images: bool = Field(default=False, description="Load images during scraping")
-    proxy_url: Optional[str] = Field(default=None, description="Proxy server URL")
+    # Job metadata (added for consistency with API)
+    name: Optional[str] = Field(default=None, description="Human-readable job name")
+    max_pages: int = Field(default=10, ge=1, le=1000, description="Maximum pages to scrape")
     
-    @field_validator('custom_selectors')
+    @field_validator('user_agent')
     @classmethod
-    def validate_selectors(cls, v):
-        """Validate CSS selectors format."""
-        if not isinstance(v, dict):
-            raise ValueError("custom_selectors must be a dictionary")
-        return v
-    
-    @field_validator('proxy_url')
-    @classmethod
-    def validate_proxy_url(cls, v):
-        """Validate proxy URL format."""
-        if v and not (v.startswith('http://') or v.startswith('https://') or v.startswith('socks://')):
-            raise ValueError("proxy_url must start with http://, https://, or socks://")
+    def validate_user_agent(cls, v):
+        """Validate user agent string format."""
+        if v is not None and len(v.strip()) == 0:
+            raise ValueError("User agent cannot be empty string")
         return v
 
 
@@ -184,13 +99,35 @@ class ScrapingJob(BaseModel):
         """Validate URL format."""
         if not v.startswith(('http://', 'https://')):
             raise ValueError("URL must start with http:// or https://")
+        
+        # Additional URL validation
+        url_pattern = re.compile(
+            r'^https?://'  # http:// or https://
+            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
+            r'localhost|'  # localhost...
+            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
+            r'(?::\d+)?'  # optional port
+            r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+        
+        if not url_pattern.match(v):
+            raise ValueError("Invalid URL format")
+        
         return v
     
     @model_validator(mode='after')
-    def validate_pages_completed(self):
-        """Ensure pages_completed doesn't exceed total_pages."""
-        if self.pages_completed > self.total_pages:
+    def validate_job_consistency(self):
+        """Validate job data consistency."""
+        # Ensure pages_completed doesn't exceed total_pages
+        if self.total_pages > 0 and self.pages_completed > self.total_pages:
             raise ValueError("pages_completed cannot exceed total_pages")
+        
+        # Ensure status transitions are logical
+        if self.status == JobStatus.COMPLETED and self.completed_at is None:
+            self.completed_at = datetime.utcnow()
+        
+        if self.status == JobStatus.RUNNING and self.started_at is None:
+            self.started_at = datetime.utcnow()
+        
         return self
 
 
@@ -206,10 +143,10 @@ class ScrapedData(BaseModel):
     raw_html: Optional[str] = Field(default=None, description="Raw HTML content")
     content_type: ContentType = Field(default=ContentType.HTML, description="Type of content scraped")
     
-    # Metadata
+    # Content metadata (added for consistency with database model)
     content_metadata: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Additional metadata about the scraping process"
+        description="Additional metadata about the content"
     )
     
     # AI processing results
@@ -241,14 +178,6 @@ class ScrapedData(BaseModel):
     content_length: int = Field(default=0, ge=0, description="Length of extracted content")
     load_time: float = Field(default=0.0, ge=0.0, description="Page load time in seconds")
     
-    @field_validator('content')
-    @classmethod
-    def validate_content(cls, v):
-        """Validate content is not empty."""
-        if not v:
-            raise ValueError("content cannot be empty")
-        return v
-    
     @field_validator('url')
     @classmethod
     def validate_url(cls, v):
@@ -256,30 +185,38 @@ class ScrapedData(BaseModel):
         if not v.startswith(('http://', 'https://')):
             raise ValueError("URL must start with http:// or https://")
         return v
-
-
-class ScrapingResult(BaseModel):
-    """Model representing the result of a scraping operation."""
     
-    job_id: str = Field(..., description="ID of the scraping job")
-    success: bool = Field(..., description="Whether the scraping was successful")
-    data: Optional[List[ScrapedData]] = Field(default=None, description="Scraped data if successful")
-    error_message: Optional[str] = Field(default=None, description="Error message if failed")
+    @field_validator('content')
+    @classmethod
+    def validate_content(cls, v):
+        """Validate content structure."""
+        if not isinstance(v, dict):
+            raise ValueError("Content must be a dictionary")
+        
+        # Ensure required content fields
+        required_fields = ['title', 'text']
+        for field in required_fields:
+            if field not in v:
+                v[field] = ""  # Set default empty values
+        
+        return v
     
-    # Performance metrics
-    total_time: float = Field(default=0.0, ge=0.0, description="Total scraping time in seconds")
-    pages_scraped: int = Field(default=0, ge=0, description="Number of pages successfully scraped")
-    pages_failed: int = Field(default=0, ge=0, description="Number of pages that failed")
-    
-    # Quality metrics
-    average_confidence: float = Field(
-        default=0.0, ge=0.0, le=1.0,
-        description="Average confidence score across all scraped data"
-    )
-    data_quality_summary: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Summary of data quality metrics"
-    )
+    @model_validator(mode='after')
+    def validate_data_consistency(self):
+        """Validate scraped data consistency."""
+        # Update content_length based on actual content
+        if self.content and 'text' in self.content:
+            self.content_length = len(str(self.content['text']))
+        
+        # Set processed_at if AI processing was applied
+        if self.ai_processed and self.processed_at is None:
+            self.processed_at = datetime.utcnow()
+        
+        # Validate quality scores consistency
+        if self.confidence_score > 0 and not self.ai_processed:
+            self.ai_processed = True
+        
+        return self
 
 
 class DataExportRequest(BaseModel):
@@ -294,30 +231,40 @@ class DataExportRequest(BaseModel):
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Minimum confidence score")
     include_raw_html: bool = Field(default=False, description="Include raw HTML in export")
     fields: Optional[List[str]] = Field(default=None, description="Specific fields to include")
-    
-    @field_validator('date_to')
-    @classmethod
-    def validate_date_range(cls, v, info):
-        """Validate date range is logical."""
-        if v and info.data.get('date_from') and v < info.data['date_from']:
-            raise ValueError("date_to must be after date_from")
-        return v
 
 
 # Response models for API
 class JobResponse(BaseModel):
     """Response model for job-related API endpoints."""
-    job: ScrapingJob
+    job: Union[Dict[str, Any], ScrapingJob]
     message: str = "Job processed successfully"
+    
+    class Config:
+        arbitrary_types_allowed = True
+
+
+class JobListResponse(BaseModel):
+    """Response model for job listing API endpoints."""
+    jobs: List[Dict[str, Any]]
+    total: int
+    page: int = 1
+    page_size: int = 50
+    has_next: bool = False
 
 
 class DataResponse(BaseModel):
     """Response model for data retrieval API endpoints."""
-    data: List[ScrapedData]
+    data: List[Dict[str, Any]]
     total_count: int
     page: int = 1
     page_size: int = 50
     has_next: bool = False
+
+
+class DataListResponse(BaseModel):
+    """Response model for scraped data listing."""
+    data: List[Dict[str, Any]]
+    total: int
 
 
 class HealthCheckResponse(BaseModel):
@@ -326,4 +273,12 @@ class HealthCheckResponse(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     version: str = "1.0.0"
     database_connected: bool = True
-    redis_connected: bool = True
+    services: Dict[str, str] = Field(default_factory=dict)
+
+
+class ErrorResponse(BaseModel):
+    """Standard error response model."""
+    error: str
+    message: str
+    details: Optional[Dict[str, Any]] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)

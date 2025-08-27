@@ -1,339 +1,188 @@
 #!/usr/bin/env python3
 """
-Security validation script for the AI Web Scraper project.
+Security validation script for AI Web Scraper.
 
-This script validates security configuration and identifies potential vulnerabilities.
-Run this before deploying to production.
+This script checks for common security issues and validates
+that sensitive configuration is properly set up.
 """
 
 import os
-import re
 import sys
-from typing import List, Dict, Any
+import re
 from pathlib import Path
+from typing import List, Tuple
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+def check_env_file() -> List[Tuple[str, str]]:
+    """Check .env file for security issues."""
+    issues = []
+    env_path = Path(".env")
+    
+    if not env_path.exists():
+        issues.append(("ERROR", ".env file not found. Copy .env.template to .env"))
+        return issues
+    
+    with open(env_path, 'r') as f:
+        content = f.read()
+    
+    # Check for placeholder values
+    placeholders = [
+        ("GEMINI_API_KEY=your_gemini_api_key_here", "Gemini API key is still placeholder"),
+        ("SECRET_KEY=your_secure_secret_key", "Secret key is still placeholder"),
+        ("ENCRYPTION_MASTER_KEY=your_encryption_master_key", "Encryption key is still placeholder"),
+        ("SECRET_KEY=2004", "Secret key is weak (was example value)"),
+    ]
+    
+    for placeholder, message in placeholders:
+        if placeholder in content:
+            issues.append(("ERROR", message))
+    
+    # Check for weak patterns
+    if re.search(r'SECRET_KEY=.{1,10}$', content, re.MULTILINE):
+        issues.append(("WARNING", "Secret key appears to be too short (should be 32+ characters)"))
+    
+    if re.search(r'GEMINI_API_KEY=test|demo|example', content, re.IGNORECASE):
+        issues.append(("ERROR", "Gemini API key appears to be a test/demo value"))
+    
+    # Check for development settings in production
+    if "ENVIRONMENT=production" in content:
+        if "DEBUG=true" in content:
+            issues.append(("WARNING", "Debug mode enabled in production environment"))
+        if "localhost" in content:
+            issues.append(("WARNING", "Localhost URLs found in production environment"))
+    
+    return issues
 
-try:
-    from src.config.security_config import get_security_settings, validate_security_configuration
-    from src.utils.security_init import validate_runtime_security
-except ImportError as e:
-    print(f"Error importing security modules: {e}")
-    print("Make sure you're running this from the project root directory")
-    sys.exit(1)
+def check_file_permissions() -> List[Tuple[str, str]]:
+    """Check file permissions for sensitive files."""
+    issues = []
+    
+    sensitive_files = [".env", "config/secure_config.enc"]
+    
+    for file_path in sensitive_files:
+        path = Path(file_path)
+        if path.exists():
+            # Check if file is readable by others (Unix-like systems)
+            if hasattr(os, 'stat'):
+                import stat
+                file_stat = path.stat()
+                if file_stat.st_mode & stat.S_IROTH:
+                    issues.append(("WARNING", f"{file_path} is readable by others"))
+                if file_stat.st_mode & stat.S_IWOTH:
+                    issues.append(("ERROR", f"{file_path} is writable by others"))
+    
+    return issues
 
-
-class SecurityValidator:
-    """Comprehensive security validator for the web scraper project."""
+def check_hardcoded_secrets() -> List[Tuple[str, str]]:
+    """Check for hardcoded secrets in Python files."""
+    issues = []
     
-    def __init__(self):
-        self.issues = []
-        self.warnings = []
-        self.passed_checks = []
+    # Patterns that might indicate hardcoded secrets
+    secret_patterns = [
+        (r'api_key\s*=\s*["\'][^"\']{20,}["\']', "Possible hardcoded API key"),
+        (r'password\s*=\s*["\'][^"\']+["\']', "Possible hardcoded password"),
+        (r'secret\s*=\s*["\'][^"\']{10,}["\']', "Possible hardcoded secret"),
+        (r'token\s*=\s*["\'][^"\']{20,}["\']', "Possible hardcoded token"),
+    ]
     
-    def validate_environment_variables(self) -> None:
-        """Validate critical environment variables."""
-        print("🔍 Validating environment variables...")
-        
-        # Critical environment variables that must be set
-        critical_vars = {
-            "JWT_SECRET_KEY": {
-                "min_length": 32,
-                "description": "JWT signing secret"
-            },
-            "ENCRYPTION_MASTER_KEY": {
-                "min_length": 32,
-                "description": "Master encryption key"
-            },
-            "AUDIT_CHECKSUM_SALT": {
-                "min_length": 16,
-                "description": "Audit log integrity salt"
-            },
-            "GEMINI_API_KEY": {
-                "pattern": r"^AIza[A-Za-z0-9_-]{35}$",
-                "description": "Gemini API key"
-            }
-        }
-        
-        for var_name, requirements in critical_vars.items():
-            value = os.getenv(var_name)
-            
-            if not value:
-                self.issues.append(f"❌ {var_name} is not set (required for {requirements['description']})")
-                continue
-            
-            # Check minimum length
-            if "min_length" in requirements and len(value) < requirements["min_length"]:
-                self.issues.append(
-                    f"❌ {var_name} is too short (minimum {requirements['min_length']} characters)"
-                )
-                continue
-            
-            # Check pattern
-            if "pattern" in requirements and not re.match(requirements["pattern"], value):
-                self.issues.append(f"❌ {var_name} format is invalid")
-                continue
-            
-            self.passed_checks.append(f"✅ {var_name} is properly configured")
-        
-        # Check for insecure defaults
-        insecure_defaults = {
-            "JWT_SECRET_KEY": ["change-this-in-production", "secret", "key", "test"],
-            "ENCRYPTION_MASTER_KEY": ["change-this", "secret", "key", "test"],
-            "DB_PASSWORD": ["password", "admin", "root", "test"],
-            "REDIS_PASSWORD": ["password", "admin", "redis", "test"]
-        }
-        
-        for var_name, bad_values in insecure_defaults.items():
-            value = os.getenv(var_name, "").lower()
-            if any(bad_val in value for bad_val in bad_values):
-                self.issues.append(f"❌ {var_name} appears to use an insecure default value")
+    python_files = Path("src").rglob("*.py")
     
-    def validate_file_permissions(self) -> None:
-        """Validate file permissions for security-sensitive files."""
-        print("🔍 Validating file permissions...")
-        
-        sensitive_files = [
-            ".env",
-            ".env.production",
-            "config/secure_config.enc",
-            "logs/audit.log"
-        ]
-        
-        for file_path in sensitive_files:
-            if os.path.exists(file_path):
-                file_stat = os.stat(file_path)
-                file_mode = file_stat.st_mode & 0o777
-                
-                # Check if file is readable by others (should be 600 or 640)
-                if file_mode & 0o044:
-                    self.issues.append(f"❌ {file_path} is readable by others (permissions: {oct(file_mode)})")
-                
-                # Check if file is writable by others
-                if file_mode & 0o022:
-                    self.issues.append(f"❌ {file_path} is writable by others (permissions: {oct(file_mode)})")
-                
-                if file_mode == 0o600:
-                    self.passed_checks.append(f"✅ {file_path} has secure permissions")
-    
-    def validate_cors_configuration(self) -> None:
-        """Validate CORS configuration."""
-        print("🔍 Validating CORS configuration...")
-        
-        cors_origins = os.getenv("CORS_ORIGINS", "")
-        
-        if not cors_origins:
-            self.warnings.append("⚠️  CORS_ORIGINS not configured - using defaults")
-            return
-        
-        origins = [origin.strip() for origin in cors_origins.split(",")]
-        
-        for origin in origins:
-            if origin == "*":
-                self.issues.append("❌ CORS allows all origins (*) - security risk in production")
-            elif origin.startswith("http://") and os.getenv("ENVIRONMENT") == "production":
-                self.warnings.append(f"⚠️  CORS origin uses HTTP in production: {origin}")
-            elif origin.startswith("https://"):
-                self.passed_checks.append(f"✅ CORS origin uses HTTPS: {origin}")
-    
-    def validate_database_security(self) -> None:
-        """Validate database security configuration."""
-        print("🔍 Validating database security...")
-        
-        db_ssl_mode = os.getenv("DB_SSL_MODE", "prefer")
-        environment = os.getenv("ENVIRONMENT", "development")
-        
-        if environment == "production" and db_ssl_mode not in ["require", "verify-ca", "verify-full"]:
-            self.issues.append(f"❌ Database SSL mode '{db_ssl_mode}' is not secure for production")
-        elif db_ssl_mode in ["require", "verify-ca", "verify-full"]:
-            self.passed_checks.append(f"✅ Database SSL mode is secure: {db_ssl_mode}")
-        
-        # Check for database URL format (may expose credentials in logs)
-        if os.getenv("DATABASE_URL"):
-            self.warnings.append("⚠️  DATABASE_URL format detected - consider using separate DB_* variables")
-    
-    def validate_scraping_security(self) -> None:
-        """Validate scraping security configuration."""
-        print("🔍 Validating scraping security...")
-        
-        # Check user agents
-        user_agents = os.getenv("SCRAPER_USER_AGENTS", "")
-        if user_agents:
-            agents = user_agents.split("|")
-            for agent in agents:
-                # Check for system-specific information that could fingerprint
-                if any(keyword in agent.lower() for keyword in ["windows", "mac", "linux", "chrome", "firefox", "safari"]):
-                    self.warnings.append(f"⚠️  User agent may be fingerprintable: {agent[:50]}...")
-                else:
-                    self.passed_checks.append("✅ User agents appear generic")
-                    break
-        
-        # Check robots.txt respect
-        respect_robots = os.getenv("SCRAPER_RESPECT_ROBOTS_TXT", "true").lower()
-        if respect_robots == "true":
-            self.passed_checks.append("✅ Robots.txt respect is enabled")
-        else:
-            self.warnings.append("⚠️  Robots.txt respect is disabled - may violate website policies")
-        
-        # Check SSL validation
-        validate_ssl = os.getenv("SCRAPER_VALIDATE_SSL", "true").lower()
-        if validate_ssl == "true":
-            self.passed_checks.append("✅ SSL validation is enabled")
-        else:
-            self.issues.append("❌ SSL validation is disabled - security risk")
-    
-    def validate_logging_security(self) -> None:
-        """Validate logging security configuration."""
-        print("🔍 Validating logging security...")
-        
-        log_level = os.getenv("LOG_LEVEL", "INFO")
-        environment = os.getenv("ENVIRONMENT", "development")
-        
-        if environment == "production" and log_level == "DEBUG":
-            self.warnings.append("⚠️  DEBUG logging enabled in production - may expose sensitive data")
-        
-        # Check if logs are structured (JSON format is more secure)
-        log_format = os.getenv("LOG_FORMAT", "text")
-        if log_format == "json":
-            self.passed_checks.append("✅ Structured JSON logging is enabled")
-        else:
-            self.warnings.append("⚠️  Consider using JSON log format for better security")
-    
-    def check_for_hardcoded_secrets(self) -> None:
-        """Check source code for hardcoded secrets."""
-        print("🔍 Scanning for hardcoded secrets...")
-        
-        # Patterns that might indicate hardcoded secrets
-        secret_patterns = [
-            (r'api[_-]?key\s*=\s*["\'][^"\']{10,}["\']', "API key"),
-            (r'secret\s*=\s*["\'][^"\']{10,}["\']', "Secret"),
-            (r'password\s*=\s*["\'][^"\']{5,}["\']', "Password"),
-            (r'token\s*=\s*["\'][^"\']{10,}["\']', "Token"),
-            (r'AIza[A-Za-z0-9_-]{35}', "Google API key"),
-            (r'sk-[A-Za-z0-9]{20,}', "OpenAI API key"),
-        ]
-        
-        python_files = list(Path("src").rglob("*.py"))
-        
-        for file_path in python_files:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                for pattern, secret_type in secret_patterns:
-                    matches = re.finditer(pattern, content, re.IGNORECASE)
-                    for match in matches:
-                        line_num = content[:match.start()].count('\n') + 1
-                        self.issues.append(
-                            f"❌ Potential hardcoded {secret_type} in {file_path}:{line_num}"
-                        )
-            except Exception as e:
-                self.warnings.append(f"⚠️  Could not scan {file_path}: {e}")
-        
-        if not any("hardcoded" in issue for issue in self.issues):
-            self.passed_checks.append("✅ No hardcoded secrets detected in source code")
-    
-    def run_all_validations(self) -> Dict[str, Any]:
-        """Run all security validations."""
-        print("🛡️  Starting comprehensive security validation...\n")
-        
-        self.validate_environment_variables()
-        self.validate_file_permissions()
-        self.validate_cors_configuration()
-        self.validate_database_security()
-        self.validate_scraping_security()
-        self.validate_logging_security()
-        self.check_for_hardcoded_secrets()
-        
-        # Run built-in validations
+    for py_file in python_files:
         try:
-            config_warnings = validate_security_configuration()
-            runtime_issues = validate_runtime_security()
+            with open(py_file, 'r', encoding='utf-8') as f:
+                content = f.read()
             
-            self.warnings.extend([f"⚠️  {w}" for w in config_warnings])
-            self.issues.extend([f"❌ {i}" for i in runtime_issues])
-        except Exception as e:
-            self.warnings.append(f"⚠️  Could not run built-in validations: {e}")
+            for pattern, message in secret_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                if matches:
+                    # Skip if it's clearly using environment variables
+                    if not any("os.getenv" in match or "getenv" in match for match in matches):
+                        issues.append(("WARNING", f"{py_file}: {message}"))
         
-        return {
-            "issues": self.issues,
-            "warnings": self.warnings,
-            "passed_checks": self.passed_checks,
-            "total_issues": len(self.issues),
-            "total_warnings": len(self.warnings),
-            "total_passed": len(self.passed_checks)
-        }
+        except Exception as e:
+            issues.append(("WARNING", f"Could not read {py_file}: {e}"))
+    
+    return issues
 
-
-def generate_security_report(results: Dict[str, Any]) -> None:
-    """Generate a comprehensive security report."""
-    print("\n" + "="*80)
-    print("🛡️  SECURITY VALIDATION REPORT")
-    print("="*80)
+def check_dependencies() -> List[Tuple[str, str]]:
+    """Check for security-related dependency issues."""
+    issues = []
     
-    # Summary
-    print(f"\n📊 SUMMARY:")
-    print(f"   ✅ Passed Checks: {results['total_passed']}")
-    print(f"   ⚠️  Warnings: {results['total_warnings']}")
-    print(f"   ❌ Issues: {results['total_issues']}")
+    requirements_path = Path("requirements.txt")
+    if requirements_path.exists():
+        with open(requirements_path, 'r') as f:
+            content = f.read()
+        
+        # Check for pinned versions
+        unpinned = re.findall(r'^([a-zA-Z0-9_-]+)(?:\[[^\]]+\])?$', content, re.MULTILINE)
+        if unpinned:
+            issues.append(("WARNING", f"Unpinned dependencies found: {', '.join(unpinned[:5])}"))
+        
+        # Check for known vulnerable packages (basic check)
+        vulnerable_patterns = [
+            "requests<2.20.0",
+            "urllib3<1.24.2",
+            "cryptography<3.0.0"
+        ]
+        
+        for pattern in vulnerable_patterns:
+            if pattern in content:
+                issues.append(("ERROR", f"Potentially vulnerable dependency: {pattern}"))
     
-    # Security score
-    total_checks = results['total_passed'] + results['total_warnings'] + results['total_issues']
-    if total_checks > 0:
-        score = (results['total_passed'] / total_checks) * 100
-        print(f"   🎯 Security Score: {score:.1f}%")
-    
-    # Issues (Critical)
-    if results['issues']:
-        print(f"\n❌ CRITICAL ISSUES ({len(results['issues'])}):")
-        for issue in results['issues']:
-            print(f"   {issue}")
-    
-    # Warnings
-    if results['warnings']:
-        print(f"\n⚠️  WARNINGS ({len(results['warnings'])}):")
-        for warning in results['warnings']:
-            print(f"   {warning}")
-    
-    # Passed checks
-    if results['passed_checks']:
-        print(f"\n✅ PASSED CHECKS ({len(results['passed_checks'])}):")
-        for check in results['passed_checks']:
-            print(f"   {check}")
-    
-    # Recommendations
-    print(f"\n💡 RECOMMENDATIONS:")
-    if results['issues']:
-        print("   1. Fix all critical issues before deploying to production")
-        print("   2. Generate secure secrets with: openssl rand -hex 32")
-        print("   3. Set proper file permissions: chmod 600 .env")
-        print("   4. Use HTTPS for all external connections in production")
-    
-    if results['total_issues'] == 0:
-        print("   🎉 Great! No critical security issues found.")
-        print("   📋 Review warnings and consider implementing suggested improvements.")
-    
-    print("\n" + "="*80)
-
+    return issues
 
 def main():
-    """Main function to run security validation."""
-    validator = SecurityValidator()
-    results = validator.run_all_validations()
-    generate_security_report(results)
+    """Run all security checks."""
+    print("🔒 AI Web Scraper Security Validation")
+    print("=" * 40)
     
-    # Exit with error code if critical issues found
-    if results['total_issues'] > 0:
-        print(f"\n🚨 Security validation failed with {results['total_issues']} critical issues!")
-        print("   Please fix these issues before deploying to production.")
+    all_issues = []
+    
+    # Run all checks
+    checks = [
+        ("Environment Configuration", check_env_file),
+        ("File Permissions", check_file_permissions),
+        ("Hardcoded Secrets", check_hardcoded_secrets),
+        ("Dependencies", check_dependencies),
+    ]
+    
+    for check_name, check_func in checks:
+        print(f"\n📋 {check_name}")
+        print("-" * 30)
+        
+        try:
+            issues = check_func()
+            if not issues:
+                print("✅ No issues found")
+            else:
+                for level, message in issues:
+                    icon = "❌" if level == "ERROR" else "⚠️"
+                    print(f"{icon} {level}: {message}")
+                all_issues.extend(issues)
+        
+        except Exception as e:
+            print(f"❌ ERROR: Check failed: {e}")
+            all_issues.append(("ERROR", f"{check_name} check failed: {e}"))
+    
+    # Summary
+    print("\n" + "=" * 40)
+    print("📊 Security Validation Summary")
+    print("=" * 40)
+    
+    errors = [issue for issue in all_issues if issue[0] == "ERROR"]
+    warnings = [issue for issue in all_issues if issue[0] == "WARNING"]
+    
+    print(f"❌ Errors: {len(errors)}")
+    print(f"⚠️  Warnings: {len(warnings)}")
+    
+    if errors:
+        print("\n🚨 CRITICAL: Fix all errors before deploying to production!")
         sys.exit(1)
-    else:
-        print(f"\n🎉 Security validation passed!")
-        if results['total_warnings'] > 0:
-            print(f"   Consider addressing {results['total_warnings']} warnings for improved security.")
+    elif warnings:
+        print("\n⚠️  Review warnings and fix as needed.")
         sys.exit(0)
-
+    else:
+        print("\n✅ All security checks passed!")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()

@@ -111,7 +111,7 @@ class AuditLogORM(AuditBase):
     response_message = Column(Text, nullable=True)
     
     # Additional context
-    metadata = Column(JSON, default=dict, nullable=False)
+    event_metadata = Column(JSON, default=dict, nullable=False)
     tags = Column(JSON, default=list, nullable=False)
     
     # Tamper protection
@@ -228,7 +228,7 @@ class AuditLogger:
                     "request_params": request_params or {},
                     "response_status": response_status,
                     "response_message": response_message,
-                    "metadata": metadata or {},
+                    "event_metadata": metadata or {},
                     "tags": tags or [],
                     "timestamp": datetime.utcnow().isoformat()
                 }
@@ -423,7 +423,7 @@ class AuditLogger:
                     "request_params": audit_log.request_params,
                     "response_status": audit_log.response_status,
                     "response_message": audit_log.response_message,
-                    "metadata": audit_log.metadata,
+                    "event_metadata": audit_log.event_metadata,
                     "tags": audit_log.tags,
                     "timestamp": audit_log.timestamp.isoformat()
                 }
@@ -523,7 +523,7 @@ class AuditLogger:
                 request_params=audit_data["request_params"],
                 response_status=audit_data["response_status"],
                 response_message=audit_data["response_message"],
-                metadata=audit_data["metadata"],
+                event_metadata=audit_data["event_metadata"],
                 tags=audit_data["tags"],
                 checksum=audit_data["checksum"],
                 previous_checksum=audit_data["previous_checksum"],

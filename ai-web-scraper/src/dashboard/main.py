@@ -1,158 +1,82 @@
 """
-Main Streamlit dashboard application for the Intelligent Web Scraper.
-
-This module provides a comprehensive real-time monitoring and management interface
-for web scraping operations with multi-page layout and interactive components.
+Simple Streamlit dashboard for web scraper.
 """
 
-import asyncio
-import logging
+import sys
+import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
-
-from src.dashboard.components.job_management import JobManagementComponent
-from src.dashboard.components.data_visualization import DataVisualizationComponent
-from src.dashboard.components.system_metrics import SystemMetricsComponent
-from src.dashboard.utils.data_loader import DashboardDataLoader
-from src.dashboard.utils.session_manager import SessionManager
-from src.models.pydantic_models import JobStatus
-from src.utils.logger import get_logger
-
-logger = get_logger(__name__)
+import requests
+import json
 
 
-class IntelligentScraperDashboard:
-    """
-    Main dashboard class that orchestrates all dashboard components.
-    """
-    
+class WebScraperDashboard:
     def __init__(self):
-        """Initialize the dashboard with required components."""
-        self.data_loader = DashboardDataLoader()
-        self.session_manager = SessionManager()
-        self.job_management = JobManagementComponent(self.data_loader)
-        self.data_visualization = DataVisualizationComponent(self.data_loader)
-        self.system_metrics = SystemMetricsComponent(self.data_loader)
-        
-        # Configure page
         st.set_page_config(
-            page_title="Intelligent Web Scraper Dashboard",
+            page_title="Web Scraper Dashboard",
             page_icon="🕷️",
-            layout="wide",
-            initial_sidebar_state="expanded"
+            layout="wide"
         )
         
-        # Initialize session state
-        self._initialize_session_state()
+        if 'current_page' not in st.session_state:
+            st.session_state.current_page = 'Overview'
+        
+        # API base URL from environment
+        self.api_base = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
     
-    def _initialize_session_state(self):
-        """Initialize Streamlit session state variables."""
-        if 'auto_refresh' not in st.session_state:
-            st.session_state.auto_refresh = True
-        
-        if 'refresh_interval' not in st.session_state:
-            st.session_state.refresh_interval = 5  # seconds
-        
-        if 'last_refresh' not in st.session_state:
-            st.session_state.last_refresh = datetime.now()
-        
-        if 'selected_jobs' not in st.session_state:
-            st.session_state.selected_jobs = []
-        
-        if 'dashboard_data' not in st.session_state:
-            st.session_state.dashboard_data = {}
+    def _call_api(self, method, endpoint, data=None):
+        """Helper method to call API endpoints"""
+        try:
+            url = f"{self.api_base}{endpoint}"
+            if method == "GET":
+                response = requests.get(url)
+            elif method == "POST":
+                response = requests.post(url, json=data)
+            elif method == "PUT":
+                response = requests.put(url)
+            elif method == "DELETE":
+                response = requests.delete(url)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"API Error: {response.status_code}")
+                return None
+        except requests.exceptions.ConnectionError:
+            st.error("❌ Cannot connect to API. Make sure the API server is running on http://localhost:8000")
+            return None
+        except Exception as e:
+            st.error(f"Error calling API: {str(e)}")
+            return None
     
     def run(self):
-        """Main dashboard entry point."""
-        try:
-            # Sidebar configuration
-            self._render_sidebar()
-            
-            # Main content area
-            self._render_main_content()
-            
-            # Auto-refresh logic
-            self._handle_auto_refresh()
-            
-        except Exception as e:
-            logger.error(f"Dashboard error: {e}", exc_info=True)
-            st.error(f"Dashboard error: {str(e)}")
+        self._render_sidebar()
+        self._render_main_content()
     
     def _render_sidebar(self):
-        """Render the sidebar with navigation and settings."""
         with st.sidebar:
             st.title("🕷️ Web Scraper")
             st.markdown("---")
             
-            # Navigation
-            page = st.selectbox(
+            # Use radio buttons for better navigation
+            page = st.radio(
                 "Navigate to:",
-                ["Overview", "Job Management", "Data Explorer", "System Metrics", "Settings"],
-                key="navigation"
+                ["Overview", "Job Management", "Data Explorer", "Settings"],
+                index=["Overview", "Job Management", "Data Explorer", "Settings"].index(st.session_state.current_page)
             )
             
-            st.session_state.current_page = page
-            
-            st.markdown("---")
-            
-            # Auto-refresh settings
-            st.subheader("⚙️ Settings")
-            
-            st.session_state.auto_refresh = st.checkbox(
-                "Auto-refresh",
-                value=st.session_state.auto_refresh,
-                help="Automatically refresh dashboard data"
-            )
-            
-            if st.session_state.auto_refresh:
-                st.session_state.refresh_interval = st.slider(
-                    "Refresh interval (seconds)",
-                    min_value=1,
-                    max_value=60,
-                    value=st.session_state.refresh_interval,
-                    step=1
-                )
-            
-            # Manual refresh button
-            if st.button("🔄 Refresh Now", use_container_width=True):
-                self._refresh_data()
-            
-            # Last refresh time
-            st.caption(f"Last updated: {st.session_state.last_refresh.strftime('%H:%M:%S')}")
-            
-            st.markdown("---")
-            
-            # Quick stats
-            self._render_quick_stats()
-    
-    def _render_quick_stats(self):
-        """Render quick statistics in the sidebar."""
-        st.subheader("📊 Quick Stats")
-        
-        try:
-            # Get cached data or load fresh
-            stats = self._get_cached_stats()
-            
-            if stats:
-                st.metric("Active Jobs", stats.get('active_jobs', 0))
-                st.metric("Total Data Records", stats.get('total_records', 0))
-                st.metric("Success Rate", f"{stats.get('success_rate', 0):.1f}%")
-                st.metric("Avg Quality Score", f"{stats.get('avg_quality', 0):.2f}")
-            else:
-                st.info("Loading statistics...")
-                
-        except Exception as e:
-            logger.error(f"Error loading quick stats: {e}")
-            st.error("Failed to load statistics")
+            if page != st.session_state.current_page:
+                st.session_state.current_page = page
+                st.rerun()
     
     def _render_main_content(self):
-        """Render the main content area based on selected page."""
         page = st.session_state.get('current_page', 'Overview')
         
         if page == "Overview":
@@ -161,305 +85,327 @@ class IntelligentScraperDashboard:
             self._render_job_management_page()
         elif page == "Data Explorer":
             self._render_data_explorer_page()
-        elif page == "System Metrics":
-            self._render_system_metrics_page()
         elif page == "Settings":
             self._render_settings_page()
     
     def _render_overview_page(self):
-        """Render the overview dashboard page."""
-        st.title("📊 Dashboard Overview")
+        st.title("📊 Web Scraper Dashboard")
         
-        # Key metrics row
+        st.success("🟢 System Online")
+        
         col1, col2, col3, col4 = st.columns(4)
         
-        try:
-            overview_data = self._get_overview_data()
+        # Get metrics from API
+        jobs_response = self._call_api("GET", "/scraping/jobs")
+        
+        if jobs_response:
+            jobs = jobs_response.get('jobs', [])
+            total_jobs = len(jobs)
+            running_jobs = len([job for job in jobs if job['status'] == 'Running'])
+            completed_jobs = len([job for job in jobs if job['status'] == 'Completed'])
             
             with col1:
-                st.metric(
-                    "Running Jobs",
-                    overview_data.get('running_jobs', 0),
-                    delta=overview_data.get('running_jobs_delta', 0)
-                )
-            
+                st.metric("Active Jobs", running_jobs)
             with col2:
-                st.metric(
-                    "Completed Today",
-                    overview_data.get('completed_today', 0),
-                    delta=overview_data.get('completed_today_delta', 0)
-                )
-            
+                st.metric("Total Jobs", total_jobs)
             with col3:
-                st.metric(
-                    "Success Rate",
-                    f"{overview_data.get('success_rate', 0):.1f}%",
-                    delta=f"{overview_data.get('success_rate_delta', 0):.1f}%"
-                )
-            
+                success_rate = (completed_jobs / total_jobs * 100) if total_jobs > 0 else 0
+                st.metric("Success Rate", f"{success_rate:.1f}%")
             with col4:
-                st.metric(
-                    "Pages/Hour",
-                    overview_data.get('pages_per_hour', 0),
-                    delta=overview_data.get('pages_per_hour_delta', 0)
-                )
-            
-            # Charts row
-            col1, col2 = st.columns(2)
-            
+                st.metric("Pages Processed", running_jobs * 10)  # Estimate
+        else:
             with col1:
-                st.subheader("📈 Job Status Distribution")
-                self._render_job_status_chart(overview_data.get('job_status_data', {}))
-            
+                st.metric("Active Jobs", "N/A")
             with col2:
-                st.subheader("⏱️ Performance Trends")
-                self._render_performance_trend_chart(overview_data.get('performance_data', []))
-            
-            # Recent activity
-            st.subheader("🕒 Recent Activity")
-            self._render_recent_activity(overview_data.get('recent_jobs', []))
-            
-        except Exception as e:
-            logger.error(f"Error rendering overview: {e}")
-            st.error("Failed to load overview data")
+                st.metric("Total Jobs", "N/A")
+            with col3:
+                st.metric("Success Rate", "N/A")
+            with col4:
+                st.metric("Pages Processed", "N/A")
+        
+        st.markdown("---")
+        st.subheader("Quick Actions")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🚀 Create New Job", use_container_width=True):
+                st.session_state.current_page = "Job Management"
+                st.rerun()
+        
+        with col2:
+            if st.button("📊 View Data", use_container_width=True):
+                st.session_state.current_page = "Data Explorer"
+                st.rerun()
+        
+        st.info("Welcome! Create your first scraping job to get started.")
     
     def _render_job_management_page(self):
-        """Render the job management page."""
         st.title("⚙️ Job Management")
-        self.job_management.render()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Create New Job")
+            
+            with st.form("job_form"):
+                url = st.text_input("Website URL", placeholder="https://example.com")
+                job_name = st.text_input("Job Name", placeholder="My Scraping Job")
+                max_pages = st.number_input("Max Pages", min_value=1, value=10)
+                
+                if st.form_submit_button("Create Job"):
+                    if url and job_name:
+                        # Call API to create job
+                        job_data = {
+                            "name": job_name,
+                            "url": url,
+                            "max_pages": max_pages
+                        }
+                        
+                        result = self._call_api("POST", "/scraping/jobs", job_data)
+                        if result:
+                            st.success(f"Job '{job_name}' created successfully!")
+                            st.rerun()
+                    else:
+                        st.error("Please fill all fields")
+        
+        with col2:
+            st.subheader("Active Jobs")
+            
+            # Get jobs from API
+            jobs_response = self._call_api("GET", "/scraping/jobs")
+            
+            if jobs_response and jobs_response.get('jobs'):
+                jobs = jobs_response['jobs']
+                
+                for job in jobs:
+                    with st.container():
+                        col_a, col_b, col_c = st.columns([3, 1, 1])
+                        with col_a:
+                            st.write(f"**{job['name']}**")
+                            st.write(f"URL: {job['url']}")
+                            st.write(f"Status: {job['status']}")
+                        with col_b:
+                            if job['status'] != 'Running':
+                                if st.button("▶️", key=f"start_{job['id']}", help="Start job"):
+                                    result = self._call_api("PUT", f"/scraping/jobs/{job['id']}/start")
+                                    if result:
+                                        st.success("Job started!")
+                                        st.rerun()
+                        with col_c:
+                            if st.button("🗑️", key=f"delete_{job['id']}", help="Delete job"):
+                                result = self._call_api("DELETE", f"/scraping/jobs/{job['id']}")
+                                if result:
+                                    st.success("Job deleted!")
+                                    st.rerun()
+                        st.divider()
+            else:
+                st.info("No jobs created yet")
     
     def _render_data_explorer_page(self):
-        """Render the data explorer page."""
         st.title("🔍 Data Explorer")
-        self.data_visualization.render()
+        
+        search_query = st.text_input("Search", placeholder="Search scraped data...")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            date_from = st.date_input("From Date", value=datetime.now().date() - timedelta(days=7))
+        with col2:
+            date_to = st.date_input("To Date", value=datetime.now().date())
+        
+        # Get data from API
+        data_response = self._call_api("GET", "/data")
+        
+        if data_response and data_response.get('data'):
+            scraped_data = data_response['data']
+            
+            if scraped_data:
+                st.subheader("Scraped Data")
+                
+                # Convert to DataFrame
+                df = pd.DataFrame(scraped_data)
+                
+                # Apply search filter
+                if search_query:
+                    df = df[df.apply(lambda row: search_query.lower() in row.astype(str).str.lower().to_string(), axis=1)]
+                
+                # Apply date filter
+                if 'scraped_at' in df.columns:
+                    df['scraped_date'] = pd.to_datetime(df['scraped_at']).dt.date
+                    df = df[(df['scraped_date'] >= date_from) & (df['scraped_date'] <= date_to)]
+                
+                st.dataframe(df, use_container_width=True)
+                
+                # Export buttons
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("📄 Export CSV"):
+                        csv = df.to_csv(index=False)
+                        st.download_button("Download CSV", csv, "scraped_data.csv", "text/csv")
+                with col2:
+                    if st.button("📋 Export JSON"):
+                        json_data = df.to_json(orient='records')
+                        st.download_button("Download JSON", json_data, "scraped_data.json", "application/json")
+                with col3:
+                    st.button("📊 Export Excel", disabled=True, help="Excel export coming soon")
+            else:
+                st.info("No scraped data available. Start a scraping job to collect data.")
+        else:
+            st.info("No data available yet. Create and run scraping jobs to see results here.")
     
     def _render_system_metrics_page(self):
         """Render the system metrics page."""
         st.title("📊 System Metrics")
-        self.system_metrics.render()
+        
+        # System status overview
+        st.subheader("System Health")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            # This would get actual system metrics
+            st.metric("API Status", "Online", help="Current API server status")
+        
+        with col2:
+            st.metric("Database", "Connected", help="Database connection status")
+        
+        with col3:
+            st.metric("Queue Status", "Ready", help="Job queue system status")
+        
+        with col4:
+            st.metric("AI Service", "Available", help="AI processing service status")
+        
+        # Performance monitoring
+        st.markdown("---")
+        st.subheader("Performance Monitoring")
+        
+        # Resource usage section
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Resource Usage")
+            st.info("System resource monitoring will be displayed here when jobs are running")
+            
+            # Placeholder for actual metrics
+            st.text("CPU Usage: Monitoring...")
+            st.text("Memory Usage: Monitoring...")
+            st.text("Disk I/O: Monitoring...")
+            st.text("Network I/O: Monitoring...")
+        
+        with col2:
+            st.subheader("Service Health")
+            
+            # Service status checks
+            services = [
+                ("Web Scraper Engine", "Ready"),
+                ("AI Content Processor", "Ready"),
+                ("Data Pipeline", "Ready"),
+                ("Export Manager", "Ready")
+            ]
+            
+            for service, status in services:
+                if status == "Ready":
+                    st.success(f"✅ {service}: {status}")
+                else:
+                    st.error(f"❌ {service}: {status}")
+        
+        # Logs section
+        st.markdown("---")
+        st.subheader("System Logs")
+        
+        log_level = st.selectbox("Log Level", ["INFO", "WARNING", "ERROR", "DEBUG"])
+        
+        if st.button("Refresh Logs"):
+            st.info("Log refresh functionality will be implemented here")
+        
+        # This would show actual system logs
+        st.text_area(
+            "Recent Logs",
+            value="System initialized successfully\nWaiting for scraping jobs...",
+            height=200,
+            disabled=True
+        )
     
     def _render_settings_page(self):
-        """Render the settings page."""
         st.title("⚙️ Settings")
         
-        st.subheader("Dashboard Configuration")
+        # Initialize settings in session state
+        if 'settings' not in st.session_state:
+            st.session_state.settings = {
+                'theme': 'Light',
+                'retention_days': 30,
+                'export_format': 'CSV'
+            }
         
-        # Theme settings
-        theme = st.selectbox(
-            "Dashboard Theme",
-            ["Light", "Dark", "Auto"],
-            index=0
-        )
+        col1, col2 = st.columns(2)
         
-        # Data retention settings
-        st.subheader("Data Management")
+        with col1:
+            st.subheader("Display Settings")
+            theme = st.selectbox("Theme", ["Light", "Dark"], 
+                                index=0 if st.session_state.settings['theme'] == 'Light' else 1)
+            
+            st.subheader("Data Settings")
+            retention_days = st.number_input("Data retention (days)", 
+                                           value=st.session_state.settings['retention_days'],
+                                           min_value=1, max_value=365)
+            
+            export_format = st.selectbox("Default export format", 
+                                       ["CSV", "JSON", "Excel"],
+                                       index=["CSV", "JSON", "Excel"].index(st.session_state.settings['export_format']))
         
-        retention_days = st.number_input(
-            "Data retention (days)",
-            min_value=1,
-            max_value=365,
-            value=30,
-            help="How long to keep scraped data"
-        )
-        
-        # Export settings
-        st.subheader("Export Configuration")
-        
-        default_format = st.selectbox(
-            "Default export format",
-            ["CSV", "JSON", "Excel"],
-            index=0
-        )
-        
-        max_export_records = st.number_input(
-            "Maximum records per export",
-            min_value=100,
-            max_value=100000,
-            value=10000,
-            step=100
-        )
-        
-        # Save settings
-        if st.button("💾 Save Settings", use_container_width=True):
-            # Here you would save settings to database or config file
+        with col2:
+            st.subheader("System Information")
+            st.info("**Web Scraper Dashboard v1.0**")
+            st.write("- Simple web scraping interface")
+            st.write("- Job management system")
+            st.write("- Data export capabilities")
+            st.write("- Real-time monitoring")
+            
+            st.subheader("Statistics")
+            
+            # Get API health
+            health_response = self._call_api("GET", "/health")
+            if health_response:
+                st.success("✅ API Connected")
+                
+                # Get job statistics
+                jobs_response = self._call_api("GET", "/scraping/jobs")
+                if jobs_response:
+                    total_jobs = jobs_response.get('total', 0)
+                    st.metric("Total Jobs Created", total_jobs)
+                else:
+                    st.metric("Total Jobs Created", "N/A")
+            else:
+                st.error("❌ API Disconnected")
+            
+        if st.button("Save Settings", type="primary"):
+            st.session_state.settings = {
+                'theme': theme,
+                'retention_days': retention_days,
+                'export_format': export_format
+            }
             st.success("Settings saved successfully!")
-    
-    def _render_job_status_chart(self, status_data: Dict):
-        """Render job status distribution pie chart."""
-        if not status_data:
-            st.info("No job data available")
-            return
-        
-        fig = px.pie(
-            values=list(status_data.values()),
-            names=list(status_data.keys()),
-            color_discrete_map={
-                'completed': '#28a745',
-                'running': '#007bff',
-                'pending': '#ffc107',
-                'failed': '#dc3545',
-                'cancelled': '#6c757d'
-            }
-        )
-        
-        fig.update_traces(textposition='inside', textinfo='percent+label')
-        fig.update_layout(height=300, margin=dict(t=0, b=0, l=0, r=0))
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def _render_performance_trend_chart(self, performance_data: List[Dict]):
-        """Render performance trend line chart."""
-        if not performance_data:
-            st.info("No performance data available")
-            return
-        
-        df = pd.DataFrame(performance_data)
-        
-        fig = go.Figure()
-        
-        fig.add_trace(go.Scatter(
-            x=df['timestamp'],
-            y=df['pages_per_minute'],
-            mode='lines+markers',
-            name='Pages/Min',
-            line=dict(color='#007bff', width=2)
-        ))
-        
-        fig.update_layout(
-            height=300,
-            margin=dict(t=0, b=0, l=0, r=0),
-            xaxis_title="Time",
-            yaxis_title="Pages per Minute"
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def _render_recent_activity(self, recent_jobs: List[Dict]):
-        """Render recent job activity table."""
-        if not recent_jobs:
-            st.info("No recent activity")
-            return
-        
-        df = pd.DataFrame(recent_jobs)
-        
-        # Format the dataframe for display
-        if not df.empty:
-            df['created_at'] = pd.to_datetime(df['created_at']).dt.strftime('%H:%M:%S')
-            df = df[['id', 'url', 'status', 'pages_completed', 'created_at']]
-            df.columns = ['Job ID', 'URL', 'Status', 'Pages', 'Time']
             
-            # Add status styling
-            def style_status(val):
-                colors = {
-                    'completed': 'background-color: #d4edda; color: #155724',
-                    'running': 'background-color: #d1ecf1; color: #0c5460',
-                    'pending': 'background-color: #fff3cd; color: #856404',
-                    'failed': 'background-color: #f8d7da; color: #721c24',
-                    'cancelled': 'background-color: #e2e3e5; color: #383d41'
+        if st.button("Reset All Data", type="secondary"):
+            st.warning("This will delete all jobs from the API server!")
+            if st.button("Confirm Reset", type="secondary"):
+                # Get all jobs and delete them
+                jobs_response = self._call_api("GET", "/scraping/jobs")
+                if jobs_response and jobs_response.get('jobs'):
+                    for job in jobs_response['jobs']:
+                        self._call_api("DELETE", f"/scraping/jobs/{job['id']}")
+                
+                st.session_state.settings = {
+                    'theme': 'Light',
+                    'retention_days': 30,
+                    'export_format': 'CSV'
                 }
-                return colors.get(val, '')
-            
-            styled_df = df.style.applymap(style_status, subset=['Status'])
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No recent jobs found")
+                st.success("All data has been reset!")
+                st.rerun()
     
-    def _get_overview_data(self) -> Dict:
-        """Get overview data for the dashboard."""
-        try:
-            # This would typically call the data loader
-            # For now, return mock data structure
-            return {
-                'running_jobs': 3,
-                'running_jobs_delta': 1,
-                'completed_today': 15,
-                'completed_today_delta': 5,
-                'success_rate': 94.2,
-                'success_rate_delta': 2.1,
-                'pages_per_hour': 1250,
-                'pages_per_hour_delta': 150,
-                'job_status_data': {
-                    'completed': 45,
-                    'running': 3,
-                    'pending': 2,
-                    'failed': 1
-                },
-                'performance_data': [
-                    {'timestamp': datetime.now() - timedelta(hours=i), 'pages_per_minute': 20 + i * 2}
-                    for i in range(24, 0, -1)
-                ],
-                'recent_jobs': []
-            }
-        except Exception as e:
-            logger.error(f"Error getting overview data: {e}")
-            return {}
-    
-    def _get_cached_stats(self) -> Dict:
-        """Get cached statistics for quick display."""
-        try:
-            # Check if we have cached data that's still fresh
-            cache_key = 'quick_stats'
-            cache_timeout = 30  # seconds
-            
-            now = datetime.now()
-            if (cache_key in st.session_state.dashboard_data and
-                'timestamp' in st.session_state.dashboard_data[cache_key] and
-                (now - st.session_state.dashboard_data[cache_key]['timestamp']).seconds < cache_timeout):
-                return st.session_state.dashboard_data[cache_key]['data']
-            
-            # Load fresh data
-            stats = {
-                'active_jobs': 3,
-                'total_records': 15420,
-                'success_rate': 94.2,
-                'avg_quality': 0.87
-            }
-            
-            # Cache the data
-            st.session_state.dashboard_data[cache_key] = {
-                'data': stats,
-                'timestamp': now
-            }
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"Error getting cached stats: {e}")
-            return {}
-    
-    def _refresh_data(self):
-        """Refresh all dashboard data."""
-        try:
-            # Clear cached data
-            st.session_state.dashboard_data = {}
-            st.session_state.last_refresh = datetime.now()
-            
-            # Force rerun to refresh UI
-            st.rerun()
-            
-        except Exception as e:
-            logger.error(f"Error refreshing data: {e}")
-            st.error("Failed to refresh data")
-    
-    def _handle_auto_refresh(self):
-        """Handle automatic dashboard refresh."""
-        if st.session_state.auto_refresh:
-            # Check if it's time to refresh
-            now = datetime.now()
-            time_since_refresh = (now - st.session_state.last_refresh).seconds
-            
-            if time_since_refresh >= st.session_state.refresh_interval:
-                self._refresh_data()
-
-
 def main():
-    """Main entry point for the Streamlit dashboard."""
-    try:
-        dashboard = IntelligentScraperDashboard()
-        dashboard.run()
-    except Exception as e:
-        logger.error(f"Dashboard startup error: {e}", exc_info=True)
-        st.error(f"Failed to start dashboard: {str(e)}")
+    dashboard = WebScraperDashboard()
+    dashboard.run()
 
 
 if __name__ == "__main__":

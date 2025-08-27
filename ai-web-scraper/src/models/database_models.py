@@ -240,7 +240,7 @@ class PerformanceMetricORM(Base):
     error_type = Column(String(100), nullable=True, index=True)
     
     # Additional metadata
-    metadata = Column(JSON, default=dict, nullable=False)
+    operation_metadata = Column(JSON, default=dict, nullable=False)
     
     # Correlation tracking
     correlation_id = Column(String(36), nullable=True, index=True)
@@ -316,7 +316,7 @@ class AlertORM(Base):
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     
     # Additional data
-    metadata = Column(JSON, default=dict, nullable=False)
+    alert_metadata = Column(JSON, default=dict, nullable=False)
     
     # Timestamps
     triggered_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
