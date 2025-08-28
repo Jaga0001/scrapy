@@ -11,21 +11,26 @@ An enterprise-grade intelligent web scraping system that combines Selenium autom
 
 ## Quick Start
 
-1. Install dependencies:
+1. **Install dependencies:**
    ```bash
    uv sync
    ```
 
-2. Set up environment variables in `.env`
+2. **Configure environment:**
+   - Add your Gemini API key to `.env`:
+     ```
+     GEMINI_API_KEY=your_actual_api_key_here
+     ```
+   - Get your API key from: https://makersuite.google.com/app/apikey
 
-3. Run the API server:
+3. **Start the API server:**
    ```bash
-   uv run uvicorn src.api.main:app --reload
+   uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
-4. Run the dashboard:
+4. **Start the dashboard (in another terminal):**
    ```bash
-   uv run streamlit run src/dashboard/main.py
+   uv run streamlit run src/dashboard/main.py --server.port 8501
    ```
 
 ## Project Structure

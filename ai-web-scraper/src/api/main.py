@@ -42,34 +42,107 @@ class JobCreate(BaseModel):
     max_pages: int = 10
 
 def analyze_content_with_ai(content: str, title: str) -> dict:
-    """Analyze content using Gemini AI"""
+    """Analyze content using Gemini AI with standardized response format"""
     try:
         if not GEMINI_API_KEY:
-            return {"summary": "AI analysis not available", "confidence": 0.5}
+            return {
+                "summary": "AI analysis not available - API key not configured",
+                "confidence": 0.0,
+                "topics": [],
+                "quality_score": 0.5,
+                "key_info": [],
+                "ai_model": "gemini-2.0-flash-exp",
+                "processing_status": "disabled"
+            }
         
         prompt = f"""
-        Analyze this web content and provide:
-        1. A brief summary (max 200 characters)
-        2. Main topics/categories
-        3. Content quality score (0-1)
-        4. Key information extracted
+        Analyze this web content and provide a JSON response with the following structure:
+        {{
+            "summary": "Brief summary (max 200 characters)",
+            "topics": ["topic1", "topic2", "topic3"],
+            "quality_score": 0.8,
+            "key_info": ["key point 1", "key point 2"],
+            "content_category": "news|blog|product|documentation|other",
+            "language": "detected language code",
+            "readability_score": 0.7
+        }}
         
         Title: {title}
-        Content: {content[:1000]}  # Limit content for API
+        Content: {content[:2000]}
         
-        Respond in JSON format with keys: summary, topics, quality_score, key_info
+        Respond only with valid JSON.
         """
         
         response = model.generate_content(prompt)
-        # Parse AI response (simplified)
-        return {
-            "summary": response.text[:200] if response.text else "No summary available",
-            "confidence": 0.8,
-            "ai_analysis": response.text
-        }
+        
+        if response and response.text:
+            try:
+                # Try to parse as JSON first
+                import json
+                ai_result = json.loads(response.text.strip())
+                
+                # Validate and standardize the response
+                standardized_result = {
+                    "summary": str(ai_result.get("summary", ""))[:200],
+                    "confidence": min(max(float(ai_result.get("quality_score", 0.5)), 0.0), 1.0),
+                    "topics": ai_result.get("topics", [])[:5],  # Limit to 5 topics
+                    "quality_score": min(max(float(ai_result.get("quality_score", 0.5)), 0.0), 1.0),
+                    "key_info": ai_result.get("key_info", [])[:10],  # Limit to 10 key points
+                    "content_category": ai_result.get("content_category", "other"),
+                    "language": ai_result.get("language", "unknown"),
+                    "readability_score": min(max(float(ai_result.get("readability_score", 0.5)), 0.0), 1.0),
+                    "ai_model": "gemini-2.0-flash-exp",
+                    "processing_status": "success",
+                    "raw_response": response.text[:500]  # Keep first 500 chars of raw response
+                }
+                
+                return standardized_result
+                
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                # Fallback to text parsing if JSON parsing fails
+                return {
+                    "summary": response.text[:200] if response.text else "No summary available",
+                    "confidence": 0.6,
+                    "topics": [],
+                    "quality_score": 0.6,
+                    "key_info": [],
+                    "content_category": "other",
+                    "language": "unknown",
+                    "readability_score": 0.5,
+                    "ai_model": "gemini-2.0-flash-exp",
+                    "processing_status": "partial_success",
+                    "raw_response": response.text[:500],
+                    "parsing_error": str(e)
+                }
+        else:
+            return {
+                "summary": "AI analysis returned empty response",
+                "confidence": 0.3,
+                "topics": [],
+                "quality_score": 0.3,
+                "key_info": [],
+                "content_category": "other",
+                "language": "unknown",
+                "readability_score": 0.5,
+                "ai_model": "gemini-2.0-flash-exp",
+                "processing_status": "empty_response"
+            }
+            
     except Exception as e:
         print(f"AI analysis error: {e}")
-        return {"summary": "AI analysis failed", "confidence": 0.3}
+        return {
+            "summary": "AI analysis failed due to error",
+            "confidence": 0.2,
+            "topics": [],
+            "quality_score": 0.2,
+            "key_info": [],
+            "content_category": "other",
+            "language": "unknown",
+            "readability_score": 0.5,
+            "ai_model": "gemini-2.0-flash-exp",
+            "processing_status": "error",
+            "error_message": str(e)
+        }
 
 def scrape_website(job_id: str, url: str, max_pages: int = 1):
     """Background task to scrape website with database storage"""
@@ -206,21 +279,26 @@ def create_app() -> FastAPI:
         jobs = db.query(ScrapingJobORM).order_by(ScrapingJobORM.created_at.desc()).all()
         job_list = []
         for job in jobs:
-            job_list.append({
+            # Ensure consistent field mapping
+            job_dict = {
                 "id": job.id,
                 "name": job.config.get("name", "Unnamed Job"),
                 "url": job.url,
-                "max_pages": job.config.get("max_pages", 1),
+                "max_pages": job.config.get("max_pages", job.total_pages or 1),
                 "status": job.status,
-                "created_at": job.created_at.isoformat(),
+                "created_at": job.created_at.isoformat() if job.created_at else None,
                 "started_at": job.started_at.isoformat() if job.started_at else None,
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-                "pages_completed": job.pages_completed,
-                "total_pages": job.total_pages,
+                "pages_completed": job.pages_completed or 0,
+                "total_pages": job.total_pages or 0,
                 "error_message": job.error_message,
-                "retry_count": job.retry_count,
-                "priority": job.priority
-            })
+                "retry_count": job.retry_count or 0,
+                "priority": job.priority or 5,
+                "user_id": job.user_id,
+                "tags": job.tags or [],
+                "config": job.config or {}
+            }
+            job_list.append(job_dict)
         return JobListResponse(jobs=job_list, total=len(job_list))
     
     @app.post("/api/v1/scraping/jobs", response_model=JobResponse)
@@ -291,7 +369,7 @@ def create_app() -> FastAPI:
         db.commit()
         return {"message": f"Job {job_id} deleted"}
     
-    @app.get("/api/v1/data")
+    @app.get("/api/v1/data", response_model=DataListResponse)
     async def get_scraped_data(db: Session = Depends(get_db)):
         data = db.query(ScrapedDataORM).order_by(ScrapedDataORM.extracted_at.desc()).all()
         data_list = []
@@ -299,18 +377,32 @@ def create_app() -> FastAPI:
             job = db.query(ScrapingJobORM).filter(ScrapingJobORM.id == item.job_id).first()
             job_name = job.config.get("name", "Unknown") if job else "Unknown"
             
-            data_list.append({
+            # Ensure consistent data structure for export compatibility
+            content_text = ""
+            if item.content and isinstance(item.content, dict):
+                content_text = item.content.get("text", "")
+                if isinstance(content_text, str) and len(content_text) > 200:
+                    content_text = content_text[:200] + "..."
+            
+            data_dict = {
+                "id": item.id,
                 "job_id": item.job_id,
                 "job_name": job_name,
                 "url": item.url,
-                "title": item.content.get("title", "No title"),
-                "content": item.content.get("text", "No content")[:200] + "...",
-                "scraped_at": item.extracted_at.isoformat(),
-                "scraped_date": item.extracted_at.strftime("%Y-%m-%d"),
-                "confidence_score": item.confidence_score,
-                "ai_processed": item.ai_processed
-            })
-        return {"data": data_list, "total": len(data_list)}
+                "title": item.content.get("title", "No title") if item.content else "No title",
+                "content": content_text,
+                "scraped_at": item.extracted_at.isoformat() if item.extracted_at else None,
+                "scraped_date": item.extracted_at.strftime("%Y-%m-%d") if item.extracted_at else None,
+                "confidence_score": float(item.confidence_score) if item.confidence_score else 0.0,
+                "ai_processed": bool(item.ai_processed),
+                "data_quality_score": float(item.data_quality_score) if item.data_quality_score else 0.0,
+                "content_length": int(item.content_length) if item.content_length else 0,
+                "load_time": float(item.load_time) if item.load_time else 0.0,
+                "content_type": item.content_type or "html",
+                "validation_errors": item.validation_errors or []
+            }
+            data_list.append(data_dict)
+        return DataListResponse(data=data_list, total=len(data_list))
     
     @app.delete("/api/v1/data")
     async def clear_scraped_data(db: Session = Depends(get_db)):
@@ -334,7 +426,7 @@ if __name__ == "__main__":
     import uvicorn
     
     uvicorn.run(
-        "src.api.main:app",
+        app,
         host="0.0.0.0",
         port=8000,
         reload=True,

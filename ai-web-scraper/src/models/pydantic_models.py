@@ -25,6 +25,8 @@ class ContentType(str, Enum):
     TEXT = "text"
     JSON = "json"
     XML = "xml"
+    PDF = "pdf"
+    CSV = "csv"
 
 
 class ScrapingConfig(BaseModel):
@@ -56,6 +58,21 @@ class ScrapingConfig(BaseModel):
     # Job metadata (added for consistency with API)
     name: Optional[str] = Field(default=None, description="Human-readable job name")
     max_pages: int = Field(default=10, ge=1, le=1000, description="Maximum pages to scrape")
+    
+    # Custom selectors for targeted extraction
+    custom_selectors: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Custom CSS selectors for targeted content extraction"
+    )
+    
+    # Exclude selectors to remove unwanted content
+    exclude_selectors: List[str] = Field(
+        default_factory=list,
+        description="CSS selectors for content to exclude from extraction"
+    )
+    
+    # JavaScript execution settings
+    javascript_enabled: bool = Field(default=True, description="Enable JavaScript execution in browser")
     
     @field_validator('user_agent')
     @classmethod
@@ -274,6 +291,51 @@ class HealthCheckResponse(BaseModel):
     version: str = "1.0.0"
     database_connected: bool = True
     services: Dict[str, str] = Field(default_factory=dict)
+
+
+class ScrapingResult(BaseModel):
+    """Model representing the result of a scraping operation."""
+    
+    job_id: str = Field(..., description="Unique job identifier")
+    success: bool = Field(..., description="Whether the scraping operation was successful")
+    data: List[ScrapedData] = Field(default_factory=list, description="List of scraped data")
+    
+    # Timing and performance metrics
+    total_time: float = Field(default=0.0, ge=0.0, description="Total processing time in seconds")
+    pages_scraped: int = Field(default=0, ge=0, description="Number of pages successfully scraped")
+    pages_failed: int = Field(default=0, ge=0, description="Number of pages that failed to scrape")
+    
+    # Quality metrics
+    average_confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="Average confidence score across all scraped data"
+    )
+    
+    # Error handling
+    error_message: Optional[str] = Field(default=None, description="Error message if operation failed")
+    
+    # Additional metadata
+    data_quality_summary: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Summary of data quality metrics"
+    )
+    
+    @model_validator(mode='after')
+    def validate_result_consistency(self):
+        """Validate scraping result consistency."""
+        # Ensure data count matches pages_scraped
+        if len(self.data) != self.pages_scraped:
+            # Allow some flexibility for partial failures
+            if self.success and len(self.data) == 0:
+                self.success = False
+                if not self.error_message:
+                    self.error_message = "No data scraped despite success flag"
+        
+        # Calculate average confidence if not set
+        if self.data and self.average_confidence == 0.0:
+            self.average_confidence = sum(item.confidence_score for item in self.data) / len(self.data)
+        
+        return self
 
 
 class ErrorResponse(BaseModel):
