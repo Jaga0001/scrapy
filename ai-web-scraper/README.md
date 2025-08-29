@@ -1,56 +1,62 @@
 # AI Web Scraper
 
-An enterprise-grade intelligent web scraping system that combines Selenium automation with Gemini AI processing capabilities to extract, analyze, and serve structured data from any website through real-time monitoring and RESTful APIs.
-
-## Features
-
-- **Intelligent Content Processing**: Gemini AI automatically understands and categorizes scraped content
-- **Real-time Monitoring**: Live dashboard showing scraping progress, data quality, and system health
-- **Production-Ready Architecture**: Scalable, fault-tolerant system with comprehensive error handling
-- **Multi-format Export**: Clean, structured data available in CSV, JSON, and API formats
+A simple AI-powered web scraping system with a dashboard interface.
 
 ## Quick Start
 
 1. **Install dependencies:**
    ```bash
-   uv sync
+   cd ai-web-scraper
+   pip install -e .
    ```
 
-2. **Configure environment:**
-   - Add your Gemini API key to `.env`:
-     ```
-     GEMINI_API_KEY=your_actual_api_key_here
-     ```
-   - Get your API key from: https://makersuite.google.com/app/apikey
-
-3. **Start the API server:**
+2. **Add your API key:**
    ```bash
-   uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+   # Edit .env file (created automatically)
+   GEMINI_API_KEY=your_actual_api_key_here
    ```
 
-4. **Start the dashboard (in another terminal):**
+3. **Run the application:**
    ```bash
-   uv run streamlit run src/dashboard/main.py --server.port 8501
+   python main.py
    ```
 
-## Project Structure
+That's it! The system will start both the API server and dashboard.
 
+## Access Points
+
+- **Dashboard:** http://localhost:8501
+- **API:** http://localhost:8000
+- **API Docs:** http://localhost:8000/docs
+
+## Individual Services
+
+Start only specific services if needed:
+
+```bash
+python main.py api        # API server only
+python main.py dashboard  # Dashboard only
+python main.py setup      # Setup environment only
 ```
-ai-web-scraper/
-├── src/
-│   ├── scraper/     # Core scraping logic
-│   ├── ai/          # Gemini AI integration
-│   ├── api/         # FastAPI endpoints
-│   ├── dashboard/   # Streamlit components
-│   ├── pipeline/    # Data processing
-│   ├── models/      # Pydantic data models
-│   └── utils/       # Shared utilities
-├── tests/           # Test suites
-└── data/           # Sample data and exports
-```
+
+## Features
+
+- Simple web scraping with AI content analysis
+- Real-time dashboard for job management
+- Data export (CSV, JSON)
+- RESTful API for automation
 
 ## Requirements
 
 - Python 3.12+
-- Chrome/Chromium browser for Selenium
-- Gemini API key
+- Chrome browser (for Selenium)
+- Gemini API key (optional, for AI features)
+
+## Usage
+
+1. Open the dashboard at http://localhost:8501
+2. Create a new scraping job with a URL
+3. Start the job and monitor progress
+4. Export scraped data when complete
+
+The system handles everything else automatically!

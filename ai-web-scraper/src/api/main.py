@@ -253,12 +253,16 @@ def create_app() -> FastAPI:
         version="1.0.0"
     )
     
+    # Secure CORS configuration
+    cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
+    cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]
+    
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=cors_origins,
+        allow_credentials=False,  # Disabled for security unless specifically needed
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
     )
     
     @app.get("/api/v1/health", response_model=HealthCheckResponse)
