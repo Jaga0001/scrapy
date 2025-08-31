@@ -1,65 +1,91 @@
 #!/usr/bin/env python3
 """
-Generate secure keys for AI Web Scraper production deployment.
+Generate secure keys and configuration for AI Web Scraper.
+This script creates cryptographically secure keys and updates environment files.
 """
 
 import secrets
+import string
 import os
+import random
 from pathlib import Path
 
-def generate_secret_key(length: int = 32) -> str:
-    """Generate a cryptographically secure secret key."""
-    return secrets.token_urlsafe(length)
-
-def generate_encryption_key() -> str:
-    """Generate a Fernet encryption key."""
-    try:
-        from cryptography.fernet import Fernet
-        return Fernet.generate_key().decode()
-    except ImportError:
-        print("⚠️  cryptography package not installed. Using fallback method.")
-        return secrets.token_urlsafe(44)  # Fernet keys are 44 characters
+def generate_secure_key(length: int = 64) -> str:
+    """Generate a cryptographically secure random key."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 def generate_jwt_secret() -> str:
-    """Generate JWT secret key."""
+    """Generate a secure JWT secret key."""
     return secrets.token_urlsafe(64)
 
-def create_secure_env_file():
-    """Create a secure .env.production file with generated keys."""
+def generate_encryption_key() -> str:
+    """Generate a secure encryption master key."""
+    return secrets.token_urlsafe(32)
+
+def get_secure_user_agents() -> list:
+    """Generate a list of secure, non-identifying user agents."""
+    # Use generic, non-identifying user agents that don't leak information
+    # Avoid specific version numbers or identifying information
+    generic_agents = [
+        "Mozilla/5.0 (compatible; WebScraper/1.0; +http://example.com/bot)",
+        "Mozilla/5.0 (compatible; DataCollector/1.0)",
+        "Mozilla/5.0 (compatible; ContentAnalyzer/1.0)",
+        "Mozilla/5.0 (compatible; ResearchBot/1.0)",
+        "Mozilla/5.0 (compatible; InfoGatherer/1.0)",
+        "Mozilla/5.0 (compatible; WebCrawler/1.0)"
+    ]
     
-    print("🔐 Generating secure keys for production...")
+    # For production, use more realistic but still generic agents
+    realistic_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:100.0) Gecko/20100101",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:100.0) Gecko/20100101"
+    ]
     
-    # Generate all keys
-    secret_key = generate_secret_key()
+    # Choose based on environment
+    environment = os.getenv("ENVIRONMENT", "development")
+    if environment == "production":
+        # Use more realistic agents for production to avoid detection
+        selected_count = random.randint(3, 5)
+        return random.sample(realistic_agents, selected_count)
+    else:
+        # Use clearly identified bot agents for development/testing
+        selected_count = random.randint(3, 4)
+        return random.sample(generic_agents, selected_count)
+
+def create_secure_env():
+    """Create a secure .env file with generated keys."""
+    env_path = Path(".env")
+    env_template_path = Path(".env.template")
+    
+    # Generate secure keys
+    secret_key = generate_secure_key(64)
     encryption_key = generate_encryption_key()
     jwt_secret = generate_jwt_secret()
+    user_agents = get_secure_user_agents()
     
-    # Create secure environment template
-    secure_env_content = f"""# AI Web Scraper - Production Environment Configuration
+    # Create secure environment configuration
+    secure_config = f"""# AI Web Scraper - Secure Configuration
 # Generated on: {os.popen('date').read().strip()}
-# IMPORTANT: Keep this file secure and never commit to version control!
+# IMPORTANT: Keep this file secure and never commit to version control
 
 # Essential Configuration
 APP_NAME="AI Web Scraper"
-ENVIRONMENT=production
+ENVIRONMENT=development
 DEBUG=false
-LOG_LEVEL=WARNING
+LOG_LEVEL=INFO
 
-# Database Configuration (Use separate variables for security)
+# Database Configuration
 DATABASE_URL=sqlite:///webscraper.db
-# For PostgreSQL/MySQL, use these instead:
-# DB_TYPE=postgresql
-# DB_HOST=your_db_host
-# DB_PORT=5432
-# DB_NAME=webscraper
-# DB_USER=your_db_user
-# DB_PASSWORD=your_secure_db_password
 
 # AI Configuration - REPLACE WITH YOUR ACTUAL API KEY
-GEMINI_API_KEY=your_actual_gemini_api_key_from_google_ai_studio
+GEMINI_API_KEY=your_actual_gemini_api_key_here
 GEMINI_MODEL=gemini-2.0-flash-exp
 
-# Security Keys (GENERATED - DO NOT CHANGE)
+# Security Keys - Generated securely
 SECRET_KEY={secret_key}
 ENCRYPTION_MASTER_KEY={encryption_key}
 JWT_SECRET_KEY={jwt_secret}
@@ -73,71 +99,112 @@ DASHBOARD_HOST=0.0.0.0
 DASHBOARD_PORT=8501
 API_BASE_URL=http://localhost:8000/api/v1
 
-# Security Settings
-CORS_ORIGINS=http://localhost:3000,http://localhost:8501
+# CORS Security - Restrict to specific origins
+CORS_ORIGINS=http://localhost:8501,http://127.0.0.1:8501
+
+# Scraper Security Settings
 SCRAPER_RESPECT_ROBOTS_TXT=true
-RATE_LIMIT_REQUESTS_PER_MINUTE=60
-SESSION_TIMEOUT_MINUTES=30
+SCRAPER_DELAY_MIN=1
+SCRAPER_DELAY_MAX=3
+SCRAPER_TIMEOUT=10
+SCRAPER_MAX_RETRIES=3
 
-# Scraper Security - Use current user agents
-SCRAPER_USER_AGENTS=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML like Gecko) Chrome/120.0.0.0 Safari/537.36,Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML like Gecko) Chrome/120.0.0.0 Safari/537.36,Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML like Gecko) Chrome/120.0.0.0 Safari/537.36
+# Secure User Agents - Generic, non-identifying agents
+SCRAPER_USER_AGENTS={','.join(user_agents)}
 
-# Data Retention Settings
-RETENTION_SCRAPED_DATA_DAYS=365
-RETENTION_JOB_LOGS_DAYS=90
-RETENTION_SYSTEM_METRICS_DAYS=30
+# Rate Limiting
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_WINDOW=3600
 
-# Redis Configuration (Optional)
-# REDIS_HOST=localhost
-# REDIS_PORT=6379
-# REDIS_PASSWORD=your_secure_redis_password
-# REDIS_SSL=false
+# Session Security
+SESSION_TIMEOUT=3600
+SECURE_COOKIES=true
 """
+
+    # Write secure configuration
+    with open(env_path, 'w') as f:
+        f.write(secure_config)
     
-    # Write to file
-    output_file = Path(".env.production")
-    output_file.write_text(secure_env_content)
-    
-    # Set secure permissions (Unix-like systems)
-    try:
-        os.chmod(output_file, 0o600)  # Read/write for owner only
-    except:
-        pass  # Windows doesn't support chmod
-    
-    print(f"✅ Secure environment file created: {output_file}")
-    print("\n🔑 Generated Keys:")
-    print(f"SECRET_KEY: {secret_key[:20]}...")
-    print(f"ENCRYPTION_MASTER_KEY: {encryption_key[:20]}...")
-    print(f"JWT_SECRET_KEY: {jwt_secret[:20]}...")
+    print("✅ Secure .env file created successfully!")
+    print(f"📁 Location: {env_path.absolute()}")
+    print("\n🔐 Generated secure keys:")
+    print(f"   - SECRET_KEY: {len(secret_key)} characters")
+    print(f"   - ENCRYPTION_MASTER_KEY: {len(encryption_key)} characters") 
+    print(f"   - JWT_SECRET_KEY: {len(jwt_secret)} characters")
+    print(f"   - USER_AGENTS: {len(user_agents)} agents selected")
     
     print("\n⚠️  IMPORTANT NEXT STEPS:")
-    print("1. Add your actual Gemini API key to .env.production")
-    print("2. Configure database settings if using PostgreSQL/MySQL")
-    print("3. Update CORS_ORIGINS for your production domains")
-    print("4. Never commit .env.production to version control!")
-    print("5. Copy .env.production to .env for local development")
+    print("   1. Replace 'your_actual_gemini_api_key_here' with your real Gemini API key")
+    print("   2. Update CORS_ORIGINS for your production domains")
+    print("   3. Set ENVIRONMENT=production for production deployment")
+    print("   4. Never commit the .env file to version control")
+    
+    return {
+        'secret_key': secret_key,
+        'encryption_key': encryption_key,
+        'jwt_secret': jwt_secret,
+        'user_agents': user_agents
+    }
+
+def update_gitignore():
+    """Ensure .env files are in .gitignore."""
+    gitignore_path = Path(".gitignore")
+    
+    env_patterns = [
+        "# Environment files",
+        ".env",
+        ".env.local", 
+        ".env.production",
+        ".env.staging",
+        "*.env",
+        "",
+        "# Security files",
+        "security_report.json",
+        "*.key",
+        "*.pem",
+        ""
+    ]
+    
+    if gitignore_path.exists():
+        with open(gitignore_path, 'r') as f:
+            existing_content = f.read()
+        
+        # Check if .env is already ignored
+        if ".env" not in existing_content:
+            with open(gitignore_path, 'a') as f:
+                f.write("\n" + "\n".join(env_patterns))
+            print("✅ Updated .gitignore to exclude environment files")
+    else:
+        with open(gitignore_path, 'w') as f:
+            f.write("\n".join(env_patterns))
+        print("✅ Created .gitignore with security exclusions")
 
 def main():
-    """Main function."""
-    print("🚀 AI Web Scraper - Secure Key Generator")
+    """Main function to generate secure configuration."""
+    print("🔐 AI Web Scraper Security Key Generator")
     print("=" * 50)
     
-    # Check if .env.production already exists
-    if Path(".env.production").exists():
-        response = input("⚠️  .env.production already exists. Overwrite? (y/N): ")
-        if response.lower() != 'y':
-            print("❌ Aborted. Existing file preserved.")
-            return
+    # Change to the correct directory
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent
+    os.chdir(project_root)
     
-    create_secure_env_file()
+    print(f"📁 Working directory: {os.getcwd()}")
     
-    print("\n🎯 Quick Start Commands:")
-    print("# Copy production config for local development:")
-    print("cp .env.production .env")
-    print("\n# Edit with your API key:")
-    print("nano .env")
-    print("\n# Start the application:")
-    print("python main.py")
+    # Generate secure configuration
+    keys = create_secure_env()
+    
+    # Update gitignore
+    update_gitignore()
+    
+    print("\n🎉 Security setup complete!")
+    print("\n💡 Additional Security Recommendations:")
+    print("   - Use environment-specific .env files (.env.production, .env.staging)")
+    print("   - Implement API key rotation policies")
+    print("   - Monitor for unusual scraping patterns")
+    print("   - Use HTTPS in production")
+    print("   - Implement request rate limiting")
+    print("   - Regular security audits with scripts/validate_security.py")
 
 if __name__ == "__main__":
     main()

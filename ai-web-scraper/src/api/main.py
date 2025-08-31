@@ -28,6 +28,7 @@ from src.models.pydantic_models import (
     ScrapingJob, ScrapedData, JobStatus, ScrapingConfig,
     JobResponse, JobListResponse, DataListResponse, HealthCheckResponse, ErrorResponse
 )
+from src.utils.security_config import SecurityConfig, validate_security_on_startup
 
 # Configure Gemini AI
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -155,11 +156,8 @@ def scrape_website(job_id: str, url: str, max_pages: int = 1):
             job.started_at = datetime.utcnow()
             db.commit()
         
-        # Use rotating user agents from environment or secure default
-        user_agents = os.getenv("SCRAPER_USER_AGENTS", "").split(",") if os.getenv("SCRAPER_USER_AGENTS") else [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        ]
+        # Use secure user agents from security configuration
+        user_agents = SecurityConfig.get_secure_user_agents()
         import random
         headers = {
             'User-Agent': random.choice(user_agents).strip()
@@ -247,15 +245,17 @@ def create_app() -> FastAPI:
     Returns:
         FastAPI: Configured FastAPI application instance
     """
+    # Validate security configuration on startup
+    validate_security_on_startup()
+    
     app = FastAPI(
         title="Web Scraper API",
         description="Simple web scraping API",
         version="1.0.0"
     )
     
-    # Secure CORS configuration
-    cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
-    cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]
+    # Secure CORS configuration using security config
+    cors_origins = SecurityConfig.get_cors_origins()
     
     app.add_middleware(
         CORSMiddleware,

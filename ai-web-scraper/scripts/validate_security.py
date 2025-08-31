@@ -1,376 +1,324 @@
 #!/usr/bin/env python3
 """
 Security validation script for AI Web Scraper.
-Checks for common security issues and misconfigurations.
+Performs comprehensive security checks on configuration and code.
 """
 
 import os
-import re
 import sys
-from pathlib import Path
-from typing import List, Tuple, Dict, Any
+import re
 import json
+from pathlib import Path
+from typing import Dict, List, Any
+import subprocess
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+try:
+    from src.utils.security_config import SecurityConfig
+except ImportError:
+    print("⚠️ Could not import SecurityConfig. Running basic validation only.")
+    SecurityConfig = None
 
 class SecurityValidator:
-    """Security validation for AI Web Scraper."""
+    """Comprehensive security validation for the web scraper project."""
     
     def __init__(self):
-        self.issues = []
-        self.warnings = []
-        self.info = []
+        self.project_root = project_root
+        self.issues = {
+            'critical': [],
+            'high': [],
+            'medium': [],
+            'low': [],
+            'info': []
+        }
     
-    def check_hardcoded_secrets(self) -> List[Tuple[str, str]]:
-        """Check for hardcoded secrets in Python files."""
-        issues = []
+    def validate_all(self) -> Dict[str, List[str]]:
+        """Run all security validations."""
+        print("🔍 Running comprehensive security validation...")
+        print("=" * 60)
         
-        # Patterns to look for
-        secret_patterns = [
-            (r'SECRET_KEY\s*=\s*["\'](?!.*\$\{)[^"\']{10,}["\']', 'Hardcoded SECRET_KEY'),
-            (r'API_KEY\s*=\s*["\'](?!.*\$\{)[^"\']{10,}["\']', 'Hardcoded API_KEY'),
-            (r'PASSWORD\s*=\s*["\'](?!.*\$\{)[^"\']{5,}["\']', 'Hardcoded PASSWORD'),
-            (r'TOKEN\s*=\s*["\'](?!.*\$\{)[^"\']{10,}["\']', 'Hardcoded TOKEN'),
-            (r'postgresql://[^:]+:[^@]+@', 'Database URL with embedded credentials'),
-            (r'mysql://[^:]+:[^@]+@', 'Database URL with embedded credentials'),
-            (r'redis://[^:]*:[^@]+@', 'Redis URL with embedded credentials'),
-        ]
+        self.validate_environment_variables()
+        self.validate_code_security()
+        self.validate_file_permissions()
+        self.validate_dependencies()
+        self.validate_configuration_files()
         
-        # Check Python files
-        for py_file in Path('.').rglob('*.py'):
-            if any(skip in str(py_file) for skip in ['venv', '__pycache__', '.git', 'node_modules']):
-                continue
-                
-            try:
-                content = py_file.read_text(encoding='utf-8')
-                for pattern, description in secret_patterns:
-                    matches = re.finditer(pattern, content, re.IGNORECASE)
-                    for match in matches:
-                        # Skip if it's a comment or example
-                        line = content[content.rfind('\n', 0, match.start())+1:content.find('\n', match.end())]
-                        if '#' in line and line.index('#') < line.index(match.group()):
-                            continue
-                        issues.append((str(py_file), description, match.group()[:50] + "..."))
-            except Exception as e:
-                self.warnings.append(f"Could not read {py_file}: {e}")
-        
-        return issues
+        return self.issues
     
-    def check_environment_files(self) -> List[str]:
-        """Check environment files for security issues."""
-        issues = []
+    def validate_environment_variables(self):
+        """Validate environment variable security."""
+        print("\n📋 Validating Environment Variables...")
         
-        env_files = ['.env', '.env.template', '.env.local', '.env.production', '.env.development']
-        dangerous_values = [
-            'your_api_key_here',
-            'your_gemini_api_key_here',
-            'dev_secret_key',
-            'change_in_production',
-            'your_secure_secret_key',
-            'ai_web_scraper_secret_key_2025_development_only',
-            'ai_web_scraper_encryption_master_key_2025_development_only',
-            'your_jwt_secret_key_here',
-            'your_redis_password_here',
-            'your_encryption_master_key',
-        ]
+        if SecurityConfig:
+            env_issues = SecurityConfig.validate_environment()
+            self.issues['critical'].extend(env_issues.get('critical', []))
+            self.issues['medium'].extend(env_issues.get('warnings', []))
+            self.issues['info'].extend(env_issues.get('info', []))
         
-        for env_file in env_files:
-            if not os.path.exists(env_file):
-                continue
+        # Additional environment checks
+        env_file = self.project_root / ".env"
+        if env_file.exists():
+            with open(env_file, 'r') as f:
+                content = f.read()
                 
-            try:
-                with open(env_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    for line_num, line in enumerate(lines, 1):
-                        line = line.strip()
-                        if not line or line.startswith('#'):
-                            continue
-                        
-                        for dangerous in dangerous_values:
-                            if dangerous.lower() in line.lower():
-                                issues.append(f"{env_file}:{line_num} - Contains placeholder value '{dangerous}'")
-                        
-                        # Check for weak keys
-                        if '=' in line:
-                            key, value = line.split('=', 1)
-                            if any(secret in key.upper() for secret in ['SECRET', 'KEY', 'PASSWORD', 'TOKEN']):
-                                if len(value.strip()) < 16:
-                                    issues.append(f"{env_file}:{line_num} - {key} appears to be too short for security")
-                                
-            except Exception as e:
-                self.warnings.append(f"Could not read {env_file}: {e}")
-        
-        return issues
-    
-    def check_cors_configuration(self) -> List[str]:
-        """Check CORS configuration for security issues."""
-        issues = []
-        
-        # Check Python files for CORS configuration
-        for py_file in Path('.').rglob('*.py'):
-            if any(skip in str(py_file) for skip in ['venv', '__pycache__', '.git']):
-                continue
-                
-            try:
-                content = py_file.read_text(encoding='utf-8')
-                
-                # Check for overly permissive CORS
-                if 'allow_origins=["*"]' in content or "allow_origins=['*']" in content:
-                    issues.append(f"{py_file} - CORS allows all origins (*)")
-                
-                if 'allow_credentials=True' in content and ('allow_origins=["*"]' in content or "allow_origins=['*']" in content):
-                    issues.append(f"{py_file} - CORS allows credentials with wildcard origins (security risk)")
-                
-            except Exception:
-                continue
-        
-        return issues
-    
-    def check_database_configuration(self) -> List[str]:
-        """Check database configuration for security issues."""
-        issues = []
-        
-        # Check for database URLs in environment files
-        env_files = ['.env', '.env.template', '.env.local', '.env.production']
-        
-        for env_file in env_files:
-            if not os.path.exists(env_file):
-                continue
-                
-            try:
-                with open(env_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    
-                    # Check for database URLs with embedded credentials
-                    db_patterns = [
-                        r'postgresql://[^:]+:[^@]+@[^/]+/\w+',
-                        r'mysql://[^:]+:[^@]+@[^/]+/\w+',
-                        r'mongodb://[^:]+:[^@]+@[^/]+/\w+',
-                    ]
-                    
-                    for pattern in db_patterns:
-                        if re.search(pattern, content):
-                            issues.append(f"{env_file} - Database URL contains embedded credentials")
-                            break
-                            
-            except Exception:
-                continue
-        
-        return issues
-    
-    def check_test_urls(self) -> List[str]:
-        """Check for hardcoded URLs in test files that might leak information."""
-        issues = []
-        
-        test_files = list(Path('tests').rglob('*.py')) if Path('tests').exists() else []
-        
-        suspicious_domains = [
-            'example-store.com',
-            'tech-news.com',
-            'electronics-store.com',
-            'dev-blog.com',
-        ]
-        
-        for test_file in test_files:
-            try:
-                content = test_file.read_text(encoding='utf-8')
-                for domain in suspicious_domains:
-                    if domain in content:
-                        issues.append(f"{test_file} - Contains potentially identifying test URL: {domain}")
-            except Exception:
-                continue
-        
-        return issues
-    
-    def check_logging_configuration(self) -> List[str]:
-        """Check logging configuration for potential information leakage."""
-        issues = []
-        
-        for py_file in Path('.').rglob('*.py'):
-            if any(skip in str(py_file) for skip in ['venv', '__pycache__', '.git']):
-                continue
-                
-            try:
-                content = py_file.read_text(encoding='utf-8')
-                
-                # Check for potentially sensitive logging
-                sensitive_patterns = [
-                    r'log.*password',
-                    r'log.*secret',
-                    r'log.*token',
-                    r'log.*key',
-                    r'print.*password',
-                    r'print.*secret',
-                    r'print.*token',
+                # Check for common insecure patterns
+                insecure_patterns = [
+                    (r'password\s*=\s*["\']?admin["\']?', 'Default admin password detected'),
+                    (r'secret\s*=\s*["\']?secret["\']?', 'Default secret value detected'),
+                    (r'key\s*=\s*["\']?key["\']?', 'Default key value detected'),
+                    (r'token\s*=\s*["\']?token["\']?', 'Default token value detected'),
+                    (r'DEBUG\s*=\s*[Tt]rue', 'Debug mode enabled'),
+                    (r'0\.0\.0\.0', 'Binding to all interfaces (0.0.0.0)'),
                 ]
                 
-                for pattern in sensitive_patterns:
+                for pattern, message in insecure_patterns:
                     if re.search(pattern, content, re.IGNORECASE):
-                        issues.append(f"{py_file} - Potentially logs sensitive information")
-                        break
-                        
-            except Exception:
+                        self.issues['medium'].append(f"Environment: {message}")
+    
+    def validate_code_security(self):
+        """Validate code for security issues."""
+        print("🔍 Scanning Code for Security Issues...")
+        
+        python_files = list(self.project_root.rglob("*.py"))
+        
+        for file_path in python_files:
+            if ".venv" in str(file_path) or "__pycache__" in str(file_path):
                 continue
-        
-        return issues
+                
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    self._check_file_security(file_path, content)
+            except Exception as e:
+                self.issues['low'].append(f"Could not read {file_path}: {e}")
     
-    def generate_security_report(self) -> Dict[str, Any]:
-        """Generate comprehensive security report."""
-        report = {
-            "timestamp": os.popen('date').read().strip(),
-            "summary": {
-                "critical_issues": 0,
-                "medium_issues": 0,
-                "low_issues": 0,
-                "warnings": len(self.warnings),
-                "info": len(self.info)
-            },
-            "issues": {
-                "hardcoded_secrets": [],
-                "environment_files": [],
-                "cors_configuration": [],
-                "database_configuration": [],
-                "test_urls": [],
-                "logging_configuration": []
-            },
-            "recommendations": []
-        }
+    def _check_file_security(self, file_path: Path, content: str):
+        """Check individual file for security issues."""
+        relative_path = file_path.relative_to(self.project_root)
         
-        # Check all categories
-        report["issues"]["hardcoded_secrets"] = self.check_hardcoded_secrets()
-        report["issues"]["environment_files"] = self.check_environment_files()
-        report["issues"]["cors_configuration"] = self.check_cors_configuration()
-        report["issues"]["database_configuration"] = self.check_database_configuration()
-        report["issues"]["test_urls"] = self.check_test_urls()
-        report["issues"]["logging_configuration"] = self.check_logging_configuration()
+        # Security patterns to check
+        security_patterns = [
+            # Critical issues
+            (r'password\s*=\s*["\'][^"\']+["\']', 'critical', 'Hardcoded password'),
+            (r'api_key\s*=\s*["\'][^"\']+["\']', 'critical', 'Hardcoded API key'),
+            (r'secret\s*=\s*["\'][^"\']+["\']', 'critical', 'Hardcoded secret'),
+            (r'token\s*=\s*["\'][^"\']+["\']', 'critical', 'Hardcoded token'),
+            
+            # High risk issues
+            (r'eval\s*\(', 'high', 'Use of eval() function'),
+            (r'exec\s*\(', 'high', 'Use of exec() function'),
+            (r'subprocess\.call\([^)]*shell\s*=\s*True', 'high', 'Shell injection risk'),
+            (r'os\.system\s*\(', 'high', 'Command injection risk'),
+            
+            # Medium risk issues
+            (r'pickle\.loads?\s*\(', 'medium', 'Unsafe pickle usage'),
+            (r'yaml\.load\s*\([^)]*Loader\s*=\s*yaml\.Loader', 'medium', 'Unsafe YAML loading'),
+            (r'requests\.get\([^)]*verify\s*=\s*False', 'medium', 'SSL verification disabled'),
+            (r'urllib\.request\.urlopen\([^)]*context\s*=\s*ssl\._create_unverified_context', 'medium', 'SSL verification disabled'),
+            
+            # Low risk issues
+            (r'print\s*\([^)]*password', 'low', 'Password in print statement'),
+            (r'print\s*\([^)]*secret', 'low', 'Secret in print statement'),
+            (r'print\s*\([^)]*token', 'low', 'Token in print statement'),
+            (r'logging\.[^(]*\([^)]*password', 'low', 'Password in log statement'),
+        ]
         
-        # Count issues by severity
-        critical_issues = len(report["issues"]["hardcoded_secrets"]) + len(report["issues"]["environment_files"])
-        medium_issues = len(report["issues"]["cors_configuration"]) + len(report["issues"]["database_configuration"])
-        low_issues = len(report["issues"]["test_urls"]) + len(report["issues"]["logging_configuration"])
-        
-        report["summary"]["critical_issues"] = critical_issues
-        report["summary"]["medium_issues"] = medium_issues
-        report["summary"]["low_issues"] = low_issues
-        
-        # Generate recommendations
-        if critical_issues > 0:
-            report["recommendations"].append("🔴 CRITICAL: Replace all placeholder credentials immediately")
-            report["recommendations"].append("🔴 CRITICAL: Generate secure keys using scripts/generate_secure_keys.py")
-        
-        if medium_issues > 0:
-            report["recommendations"].append("🟡 MEDIUM: Review CORS and database configurations")
-        
-        if low_issues > 0:
-            report["recommendations"].append("🟢 LOW: Update test files to use environment variables for URLs")
-        
-        return report
+        for pattern, severity, message in security_patterns:
+            matches = re.finditer(pattern, content, re.IGNORECASE)
+            for match in matches:
+                line_num = content[:match.start()].count('\n') + 1
+                self.issues[severity].append(
+                    f"{relative_path}:{line_num} - {message}: {match.group()[:50]}..."
+                )
     
-    def print_report(self, report: Dict[str, Any]):
-        """Print formatted security report."""
-        print("🔒 AI Web Scraper Security Validation Report")
+    def validate_file_permissions(self):
+        """Check file permissions for security issues."""
+        print("🔐 Checking File Permissions...")
+        
+        sensitive_files = [
+            ".env",
+            ".env.production",
+            ".env.staging",
+            "config/secrets.json",
+            "private_key.pem",
+            "certificate.crt"
+        ]
+        
+        for file_name in sensitive_files:
+            file_path = self.project_root / file_name
+            if file_path.exists():
+                try:
+                    stat_info = file_path.stat()
+                    permissions = oct(stat_info.st_mode)[-3:]
+                    
+                    # Check if file is readable by others
+                    if permissions[2] in ['4', '5', '6', '7']:
+                        self.issues['high'].append(
+                            f"File {file_name} is readable by others (permissions: {permissions})"
+                        )
+                    
+                    # Check if file is writable by group or others
+                    if permissions[1] in ['2', '3', '6', '7'] or permissions[2] in ['2', '3', '6', '7']:
+                        self.issues['medium'].append(
+                            f"File {file_name} is writable by group/others (permissions: {permissions})"
+                        )
+                        
+                except Exception as e:
+                    self.issues['low'].append(f"Could not check permissions for {file_name}: {e}")
+    
+    def validate_dependencies(self):
+        """Check dependencies for known vulnerabilities."""
+        print("📦 Checking Dependencies for Vulnerabilities...")
+        
+        requirements_files = [
+            "requirements.txt",
+            "pyproject.toml",
+            "Pipfile"
+        ]
+        
+        for req_file in requirements_files:
+            file_path = self.project_root / req_file
+            if file_path.exists():
+                self.issues['info'].append(f"Found dependency file: {req_file}")
+                
+                # Check for potentially insecure packages
+                try:
+                    with open(file_path, 'r') as f:
+                        content = f.read()
+                        
+                        # Known packages with security considerations
+                        risky_packages = [
+                            ('pickle', 'Pickle can execute arbitrary code'),
+                            ('yaml', 'YAML loading can be unsafe'),
+                            ('requests', 'Ensure SSL verification is enabled'),
+                            ('urllib3', 'Check SSL/TLS configuration'),
+                        ]
+                        
+                        for package, warning in risky_packages:
+                            if package in content.lower():
+                                self.issues['info'].append(f"Dependency {package}: {warning}")
+                                
+                except Exception as e:
+                    self.issues['low'].append(f"Could not read {req_file}: {e}")
+        
+        # Try to run safety check if available
+        try:
+            result = subprocess.run(['safety', 'check'], capture_output=True, text=True, timeout=30)
+            if result.returncode != 0 and "No known security vulnerabilities found" not in result.stdout:
+                self.issues['high'].append("Safety check found security vulnerabilities in dependencies")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            self.issues['info'].append("Safety check not available - install with 'pip install safety'")
+    
+    def validate_configuration_files(self):
+        """Validate configuration files for security issues."""
+        print("⚙️ Validating Configuration Files...")
+        
+        config_files = [
+            "docker-compose.yml",
+            "Dockerfile",
+            ".gitignore",
+            "nginx.conf",
+            "uwsgi.ini"
+        ]
+        
+        for config_file in config_files:
+            file_path = self.project_root / config_file
+            if file_path.exists():
+                try:
+                    with open(file_path, 'r') as f:
+                        content = f.read()
+                        self._check_config_security(config_file, content)
+                except Exception as e:
+                    self.issues['low'].append(f"Could not read {config_file}: {e}")
+        
+        # Check .gitignore
+        gitignore_path = self.project_root / ".gitignore"
+        if gitignore_path.exists():
+            with open(gitignore_path, 'r') as f:
+                gitignore_content = f.read()
+                
+                required_ignores = ['.env', '*.key', '*.pem', 'secrets/', 'config/secrets']
+                for ignore_pattern in required_ignores:
+                    if ignore_pattern not in gitignore_content:
+                        self.issues['medium'].append(f"Missing {ignore_pattern} in .gitignore")
+        else:
+            self.issues['high'].append("No .gitignore file found - sensitive files may be committed")
+    
+    def _check_config_security(self, filename: str, content: str):
+        """Check configuration file for security issues."""
+        if filename == "docker-compose.yml":
+            if "privileged: true" in content:
+                self.issues['high'].append("Docker container running in privileged mode")
+            if "user: root" in content or "user: \"root\"" in content:
+                self.issues['medium'].append("Docker container running as root user")
+        
+        elif filename == "Dockerfile":
+            if "USER root" in content and "USER " not in content.split("USER root")[1]:
+                self.issues['medium'].append("Dockerfile ends with root user")
+            if "ADD http" in content or "ADD https" in content:
+                self.issues['low'].append("Dockerfile uses ADD with URL - consider using COPY")
+        
+        elif filename == "nginx.conf":
+            if "server_tokens on" in content:
+                self.issues['low'].append("Nginx server tokens enabled - reveals version info")
+            if "ssl_protocols" not in content:
+                self.issues['medium'].append("SSL protocols not explicitly configured in Nginx")
+    
+    def print_report(self):
+        """Print security validation report."""
+        print("\n" + "=" * 60)
+        print("🔒 SECURITY VALIDATION REPORT")
         print("=" * 60)
-        print(f"Generated: {report['timestamp']}")
-        print()
         
-        # Summary
-        summary = report['summary']
-        total_issues = summary['critical_issues'] + summary['medium_issues'] + summary['low_issues']
+        total_issues = sum(len(issues) for issues in self.issues.values())
         
         if total_issues == 0:
             print("✅ No security issues found!")
-            return
+            return True
         
-        print(f"📊 Summary: {total_issues} issues found")
-        print(f"   🔴 Critical: {summary['critical_issues']}")
-        print(f"   🟡 Medium:   {summary['medium_issues']}")
-        print(f"   🟢 Low:      {summary['low_issues']}")
-        print(f"   ⚠️  Warnings: {summary['warnings']}")
-        print()
+        severity_colors = {
+            'critical': '🚨',
+            'high': '🔴',
+            'medium': '🟡',
+            'low': '🟠',
+            'info': 'ℹ️'
+        }
         
-        # Detailed issues
-        issues = report['issues']
+        has_blocking_issues = False
         
-        if issues['hardcoded_secrets']:
-            print("🔴 CRITICAL: Hardcoded Secrets Found")
-            for file_path, description, snippet in issues['hardcoded_secrets']:
-                print(f"   - {file_path}: {description}")
-                print(f"     Snippet: {snippet}")
-            print()
+        for severity, issues in self.issues.items():
+            if not issues:
+                continue
+                
+            print(f"\n{severity_colors[severity]} {severity.upper()} ({len(issues)} issues):")
+            for issue in issues:
+                print(f"  - {issue}")
+            
+            if severity in ['critical', 'high']:
+                has_blocking_issues = True
         
-        if issues['environment_files']:
-            print("🔴 CRITICAL: Environment File Issues")
-            for issue in issues['environment_files']:
-                print(f"   - {issue}")
-            print()
+        print(f"\n📊 Summary: {total_issues} total issues found")
         
-        if issues['cors_configuration']:
-            print("🟡 MEDIUM: CORS Configuration Issues")
-            for issue in issues['cors_configuration']:
-                print(f"   - {issue}")
-            print()
-        
-        if issues['database_configuration']:
-            print("🟡 MEDIUM: Database Configuration Issues")
-            for issue in issues['database_configuration']:
-                print(f"   - {issue}")
-            print()
-        
-        if issues['test_urls']:
-            print("🟢 LOW: Test URL Issues")
-            for issue in issues['test_urls']:
-                print(f"   - {issue}")
-            print()
-        
-        if issues['logging_configuration']:
-            print("🟢 LOW: Logging Configuration Issues")
-            for issue in issues['logging_configuration']:
-                print(f"   - {issue}")
-            print()
-        
-        # Recommendations
-        if report['recommendations']:
-            print("💡 Recommendations:")
-            for rec in report['recommendations']:
-                print(f"   {rec}")
-            print()
-        
-        # Warnings
-        if self.warnings:
-            print("⚠️  Warnings:")
-            for warning in self.warnings:
-                print(f"   - {warning}")
-            print()
+        if has_blocking_issues:
+            print("\n❌ VALIDATION FAILED - Critical or high severity issues found")
+            print("Please address these issues before deploying to production.")
+            return False
+        else:
+            print("\n✅ VALIDATION PASSED - No blocking security issues")
+            return True
 
 def main():
-    """Main function."""
+    """Main function to run security validation."""
     validator = SecurityValidator()
+    validator.validate_all()
     
-    print("🚀 Running AI Web Scraper Security Validation...")
-    print()
+    success = validator.print_report()
     
-    # Generate and print report
-    report = validator.generate_security_report()
-    validator.print_report(report)
-    
-    # Save report to file
-    report_file = Path("security_report.json")
-    with open(report_file, 'w') as f:
-        json.dump(report, f, indent=2)
-    
-    print(f"📄 Detailed report saved to: {report_file}")
-    
-    # Exit with appropriate code
-    total_issues = report['summary']['critical_issues'] + report['summary']['medium_issues'] + report['summary']['low_issues']
-    
-    if total_issues == 0:
-        print("\n🎉 All security checks passed!")
-        return 0
-    else:
-        print(f"\n⚠️  Found {total_issues} security issues that need attention.")
-        print("\n🔧 Quick fixes:")
-        print("   1. Run: python scripts/generate_secure_keys.py")
-        print("   2. Update .env with your actual API keys")
-        print("   3. Review CORS settings in src/api/main.py")
-        return 1
+    # Exit with appropriate code for CI/CD
+    sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
