@@ -104,22 +104,9 @@ class SeleniumDriver:
     
     def _get_user_agent_pool(self) -> List[str]:
         """Get a pool of generic user agents for rotation to prevent fingerprinting."""
-        # Check if custom user agents are configured via environment
-        from config.settings import get_settings
-        settings = get_settings()
-        
-        if hasattr(settings, 'scraper_user_agents') and settings.scraper_user_agents:
-            # Use configured generic user agents
-            return settings.scraper_user_agents.split('|')
-        
-        # Fallback to generic user agents that don't reveal system details
-        return [
-            "Mozilla/5.0 (compatible; WebScraper/1.0)",
-            "Mozilla/5.0 (compatible; DataCollector/1.0)",
-            "Mozilla/5.0 (compatible; ContentExtractor/1.0)",
-            "Mozilla/5.0 (compatible; ResearchBot/1.0)",
-            "Mozilla/5.0 (compatible; AnalyticsBot/1.0)"
-        ]
+        # Use security config to get user agents
+        from ..utils.security_config import SecurityConfig
+        return SecurityConfig.get_secure_user_agents()
     
     def _rotate_user_agent(self) -> str:
         """Rotate to a new user agent from the pool."""

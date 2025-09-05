@@ -4,12 +4,17 @@ FastAPI application for AI-powered web scraping API.
 
 import sys
 import os
+import logging
 from uuid import uuid4
 
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -145,9 +150,111 @@ def analyze_content_with_ai(content: str, title: str) -> dict:
             "error_message": str(e)
         }
 
-def scrape_website(job_id: str, url: str, max_pages: int = 1):
-    """Background task to scrape website with database storage"""
+async def scrape_website_enhanced(job_id: str, url: str, max_pages: int = 1):
+    """Enhanced background task to scrape website with professional scraper"""
+    from src.scraper.simple_scraper import SimpleWebScraper
+    from src.models.pydantic_models import ScrapingConfig
+    
     db = next(get_db())
+    job = None
+    
+    try:
+        # Update job status to running
+        job = db.query(ScrapingJobORM).filter(ScrapingJobORM.id == job_id).first()
+        if job:
+            job.status = JobStatus.RUNNING.value
+            job.started_at = datetime.utcnow()
+            db.commit()
+        
+        # Create enhanced scraping configuration
+        scraper_config = ScrapingConfig(
+            wait_time=int(os.getenv("SCRAPER_WAIT_TIME", "3")),
+            max_retries=int(os.getenv("SCRAPER_MAX_RETRIES", "3")),
+            timeout=int(os.getenv("SCRAPER_TIMEOUT", "15")),
+            delay_between_requests=float(os.getenv("SCRAPER_DELAY_MIN", "2")),
+            respect_robots_txt=os.getenv("SCRAPER_RESPECT_ROBOTS_TXT", "true").lower() == "true",
+            extract_images=True,
+            extract_links=True,
+            max_pages=max_pages
+        )
+        
+        # Initialize the enhanced scraper
+        async with SimpleWebScraper(scraper_config) as scraper:
+            logger.info(f"Starting enhanced scraping for job {job_id}: {url}")
+            
+            # Scrape the URL
+            scraped_data = await scraper.scrape_url(url, job_id)
+            
+            if scraped_data:
+                # Convert to database model
+                scraped_data_orm = ScrapedDataORM(
+                    id=scraped_data.id,
+                    job_id=scraped_data.job_id,
+                    url=scraped_data.url,
+                    content=scraped_data.content,
+                    raw_html=scraped_data.raw_html,
+                    confidence_score=scraped_data.confidence_score,
+                    ai_processed=scraped_data.ai_processed,
+                    ai_metadata=scraped_data.ai_metadata,
+                    content_length=scraped_data.content_length,
+                    load_time=scraped_data.load_time,
+                    extracted_at=scraped_data.extracted_at,
+                    data_quality_score=scraped_data.confidence_score  # Use confidence as quality score
+                )
+                
+                db.add(scraped_data_orm)
+                
+                # Update job status to completed
+                if job:
+                    job.status = JobStatus.COMPLETED.value
+                    job.completed_at = datetime.utcnow()
+                    job.pages_completed = 1
+                    job.total_pages = max_pages
+                    db.commit()
+                
+                logger.info(f"Successfully completed scraping job {job_id}")
+            else:
+                raise Exception("Failed to scrape any data from the URL")
+                
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error in enhanced scraping job {job_id}: {error_msg}")
+        
+        # Update job status to failed
+        if job:
+            job.status = JobStatus.FAILED.value
+            job.error_message = error_msg
+            job.completed_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
+def scrape_website(job_id: str, url: str, max_pages: int = 1):
+    """Background task wrapper for enhanced scraping"""
+    import asyncio
+    
+    # Create new event loop for this thread
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(scrape_website_enhanced(job_id, url, max_pages))
+    except Exception as e:
+        logger.error(f"Failed to run enhanced scraper: {e}")
+        # Fallback to basic scraping if enhanced fails
+        scrape_website_basic(job_id, url, max_pages)
+    finally:
+        try:
+            loop.close()
+        except:
+            pass
+
+
+def scrape_website_basic(job_id: str, url: str, max_pages: int = 1):
+    """Fallback basic scraping implementation"""
+    db = next(get_db())
+    job = None
+    
     try:
         # Update job status to running
         job = db.query(ScrapingJobORM).filter(ScrapingJobORM.id == job_id).first()
@@ -163,77 +270,91 @@ def scrape_website(job_id: str, url: str, max_pages: int = 1):
             'User-Agent': random.choice(user_agents).strip()
         }
         
-        pages_scraped = 0
-        for page in range(min(max_pages, 5)):  # Limit to 5 pages max
-            try:
-                # Add delay to be respectful
-                if page > 0:
-                    time.sleep(2)
-                
-                start_time = time.time()
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                load_time = time.time() - start_time
-                
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Extract title
-                title = soup.find('title')
-                title_text = title.get_text().strip() if title else f"Page {page + 1}"
-                
-                # Extract content
-                paragraphs = soup.find_all('p')
-                content_parts = []
-                for p in paragraphs[:5]:  # First 5 paragraphs
-                    text = p.get_text().strip()
-                    if text and len(text) > 20:
-                        content_parts.append(text[:300])
-                
-                content_text = " | ".join(content_parts) if content_parts else "No content extracted"
-                
-                # AI analysis
-                ai_result = analyze_content_with_ai(content_text, title_text)
-                
-                # Create scraped data record
-                scraped_data = ScrapedDataORM(
-                    id=str(uuid4()),
-                    job_id=job_id,
-                    url=url,
-                    content={
-                        "title": title_text,
-                        "text": content_text,
-                        "page_number": page + 1
-                    },
-                    raw_html=str(response.content)[:5000],  # Limit size
-                    confidence_score=ai_result.get("confidence", 0.5),
-                    ai_processed=True,
-                    ai_metadata=ai_result,
-                    content_length=len(content_text),
-                    load_time=load_time,
-                    extracted_at=datetime.utcnow()
-                )
-                
-                db.add(scraped_data)
-                pages_scraped += 1
-                
-            except Exception as e:
-                print(f"Error scraping page {page + 1}: {e}")
-                continue
+        # Add delay to be respectful
+        delay = float(os.getenv("SCRAPER_DELAY_MIN", "2"))
+        time.sleep(delay)
+        
+        start_time = time.time()
+        response = requests.get(url, headers=headers, timeout=int(os.getenv("SCRAPER_TIMEOUT", "15")))
+        response.raise_for_status()
+        load_time = time.time() - start_time
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract title
+        title = soup.find('title')
+        title_text = title.get_text().strip() if title else "No title found"
+        
+        # Extract content more thoroughly
+        # Remove unwanted elements
+        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+            element.decompose()
+        
+        # Find main content area
+        main_content = (
+            soup.find('main') or 
+            soup.find('article') or 
+            soup.find('div', class_=['content', 'main-content', 'post-content']) or
+            soup.find('body') or 
+            soup
+        )
+        
+        # Extract paragraphs
+        paragraphs = main_content.find_all('p')
+        content_parts = []
+        for p in paragraphs:
+            text = p.get_text().strip()
+            if text and len(text) > 20:  # Filter out very short paragraphs
+                content_parts.append(text)
+        
+        content_text = " ".join(content_parts) if content_parts else "No content extracted"
+        
+        # AI analysis
+        ai_result = analyze_content_with_ai(content_text, title_text)
+        
+        # Create scraped data record
+        scraped_data = ScrapedDataORM(
+            id=str(uuid4()),
+            job_id=job_id,
+            url=url,
+            content={
+                "title": title_text,
+                "text": content_text[:2000],  # Limit text length
+                "headings": [h.get_text().strip() for h in main_content.find_all(['h1', 'h2', 'h3'])[:5]],
+                "links_count": len(main_content.find_all('a', href=True)),
+                "images_count": len(main_content.find_all('img', src=True))
+            },
+            raw_html=response.text[:5000],  # Limit size
+            confidence_score=ai_result.get("confidence", 0.5),
+            ai_processed=True,
+            ai_metadata=ai_result,
+            content_length=len(content_text),
+            load_time=load_time,
+            extracted_at=datetime.utcnow(),
+            data_quality_score=ai_result.get("quality_score", 0.5)
+        )
+        
+        db.add(scraped_data)
         
         # Update job status to completed
         if job:
             job.status = JobStatus.COMPLETED.value
             job.completed_at = datetime.utcnow()
-            job.pages_completed = pages_scraped
+            job.pages_completed = 1
             job.total_pages = max_pages
             db.commit()
+            
+        logger.info(f"Basic scraping completed for job {job_id}")
                 
     except Exception as e:
-        print(f"Error in scraping job {job_id}: {e}")
+        error_msg = str(e)
+        logger.error(f"Error in basic scraping job {job_id}: {error_msg}")
+        
         # Update job status to failed
         if job:
             job.status = JobStatus.FAILED.value
-            job.error_message = str(e)
+            job.error_message = error_msg
+            job.completed_at = datetime.utcnow()
             db.commit()
     finally:
         db.close()
