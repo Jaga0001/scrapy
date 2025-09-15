@@ -20,10 +20,17 @@ import pandas as pd
 import streamlit as st
 import requests
 import json
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
+
+# Try to import plotly, but make it optional
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    st.warning("Plotly not installed. Charts will be disabled. Install with: pip install plotly")
 
 # Import security configuration
 try:
@@ -33,7 +40,7 @@ except ImportError:
     class SecurityConfig:
         @staticmethod
         def get_api_base_url():
-            return os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
+            return os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
 
 
 class WebScraperDashboard:
@@ -278,23 +285,28 @@ class WebScraperDashboard:
         """Helper method to call API endpoints"""
         try:
             url = f"{self.api_base}{endpoint}"
+            timeout = 10  # 10 second timeout
+            
             if method == "GET":
-                response = requests.get(url)
+                response = requests.get(url, timeout=timeout)
             elif method == "POST":
-                response = requests.post(url, json=data)
+                response = requests.post(url, json=data, timeout=timeout)
             elif method == "PUT":
-                response = requests.put(url)
+                response = requests.put(url, timeout=timeout)
             elif method == "DELETE":
-                response = requests.delete(url)
+                response = requests.delete(url, timeout=timeout)
             
             if response.status_code == 200:
                 return response.json()
             else:
-                st.error(f"API Error: {response.status_code}")
+                st.error(f"API Error: {response.status_code} - {response.text}")
                 return None
         except requests.exceptions.ConnectionError:
             api_url = self.api_base.replace("/api/v1", "")
             st.error(f"❌ Cannot connect to API. Make sure the API server is running on {api_url}")
+            return None
+        except requests.exceptions.Timeout:
+            st.error(f"❌ API request timed out. The server may be overloaded.")
             return None
         except Exception as e:
             st.error(f"Error calling API: {str(e)}")
@@ -938,38 +950,57 @@ class WebScraperDashboard:
             st.metric("Error Rate", "0.8%", "-0.3%")
         
         # Performance charts
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Response time trend
-            dates = pd.date_range(start='2024-01-01', periods=24, freq='H')
-            response_times = np.random.normal(1.2, 0.3, 24).clip(0.5, 3.0)
+        if PLOTLY_AVAILABLE:
+            col1, col2 = st.columns(2)
             
-            fig = px.line(
-                x=dates,
-                y=response_times,
-                title='Response Time Trend (24h)',
-                labels={'x': 'Time', 'y': 'Response Time (s)'},
-                color_discrete_sequence=['#667eea']
-            )
-            fig.add_hline(y=2.0, line_dash="dash", line_color="red", annotation_text="SLA Threshold")
-            fig.update_layout(height=350)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Throughput distribution
-            hours = list(range(24))
-            throughput = [np.random.randint(20, 80) for _ in hours]
+            with col1:
+                # Response time trend
+                dates = pd.date_range(start='2024-01-01', periods=24, freq='H')
+                response_times = np.random.normal(1.2, 0.3, 24).clip(0.5, 3.0)
+                
+                fig = px.line(
+                    x=dates,
+                    y=response_times,
+                    title='Response Time Trend (24h)',
+                    labels={'x': 'Time', 'y': 'Response Time (s)'},
+                    color_discrete_sequence=['#667eea']
+                )
+                fig.add_hline(y=2.0, line_dash="dash", line_color="red", annotation_text="SLA Threshold")
+                fig.update_layout(height=350)
+                st.plotly_chart(fig, use_container_width=True)
             
-            fig = px.bar(
-                x=hours,
-                y=throughput,
-                title='Hourly Throughput Distribution',
-                labels={'x': 'Hour of Day', 'y': 'Requests/Hour'},
-                color_discrete_sequence=['#764ba2']
-            )
-            fig.update_layout(height=350)
-            st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                # Throughput distribution
+                hours = list(range(24))
+                throughput = [np.random.randint(20, 80) for _ in hours]
+                
+                fig = px.bar(
+                    x=hours,
+                    y=throughput,
+                    title='Hourly Throughput Distribution',
+                    labels={'x': 'Hour of Day', 'y': 'Requests/Hour'},
+                    color_discrete_sequence=['#764ba2']
+                )
+                fig.update_layout(height=350)
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("📊 Charts require plotly. Install with: pip install plotly")
+            
+            # Show data in tables instead
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Response Time Trend (24h)")
+                dates = pd.date_range(start='2024-01-01', periods=24, freq='H')
+                response_times = np.random.normal(1.2, 0.3, 24).clip(0.5, 3.0)
+                df = pd.DataFrame({'Time': dates, 'Response Time (s)': response_times})
+                st.dataframe(df.tail(10), use_container_width=True)
+            
+            with col2:
+                st.subheader("Hourly Throughput Distribution")
+                hours = list(range(24))
+                throughput = [np.random.randint(20, 80) for _ in hours]
+                df = pd.DataFrame({'Hour': hours, 'Requests/Hour': throughput})
+                st.dataframe(df.tail(10), use_container_width=True)
 
     def _render_settings_page(self):
         st.markdown("""

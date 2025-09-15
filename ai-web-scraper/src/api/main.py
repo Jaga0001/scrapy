@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
@@ -25,6 +26,7 @@ from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
 import time
+import asyncio
 import google.generativeai as genai
 
 from src.database import get_db
@@ -235,19 +237,36 @@ def scrape_website(job_id: str, url: str, max_pages: int = 1):
     import asyncio
     
     # Create new event loop for this thread
+    loop = None
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(scrape_website_enhanced(job_id, url, max_pages))
+    except asyncio.CancelledError:
+        logger.info(f"Scraping job {job_id} was cancelled")
+    except KeyboardInterrupt:
+        logger.info(f"Scraping job {job_id} interrupted by user")
     except Exception as e:
         logger.error(f"Failed to run enhanced scraper: {e}")
         # Fallback to basic scraping if enhanced fails
-        scrape_website_basic(job_id, url, max_pages)
-    finally:
         try:
-            loop.close()
-        except:
-            pass
+            scrape_website_basic(job_id, url, max_pages)
+        except Exception as fallback_error:
+            logger.error(f"Fallback scraping also failed: {fallback_error}")
+    finally:
+        if loop:
+            try:
+                # Cancel any remaining tasks
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                
+                loop.close()
+            except Exception as cleanup_error:
+                logger.error(f"Error during loop cleanup: {cleanup_error}")
 
 
 def scrape_website_basic(job_id: str, url: str, max_pages: int = 1):
@@ -359,6 +378,43 @@ def scrape_website_basic(job_id: str, url: str, max_pages: int = 1):
     finally:
         db.close()
 
+# Global variable to track background tasks
+background_tasks_tracker = set()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for FastAPI application.
+    Handles startup and shutdown events properly.
+    """
+    # Startup
+    logger.info("🚀 Starting Web Scraper API...")
+    validate_security_on_startup()
+    logger.info("✅ Security configuration validated")
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down Web Scraper API...")
+    
+    # Cancel any running background tasks
+    if background_tasks_tracker:
+        logger.info(f"Cancelling {len(background_tasks_tracker)} background tasks...")
+        for task in background_tasks_tracker:
+            if not task.done():
+                task.cancel()
+        
+        # Wait for tasks to complete or timeout
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*background_tasks_tracker, return_exceptions=True),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Some background tasks did not complete within timeout")
+    
+    logger.info("✅ Shutdown complete")
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -366,13 +422,11 @@ def create_app() -> FastAPI:
     Returns:
         FastAPI: Configured FastAPI application instance
     """
-    # Validate security configuration on startup
-    validate_security_on_startup()
-    
     app = FastAPI(
         title="Web Scraper API",
         description="Simple web scraping API",
-        version="1.0.0"
+        version="1.0.0",
+        lifespan=lifespan
     )
     
     # Secure CORS configuration using security config
@@ -477,7 +531,26 @@ def create_app() -> FastAPI:
         
         if job.status != JobStatus.RUNNING.value:
             max_pages = job.config.get("max_pages", 1)
-            background_tasks.add_task(scrape_website, job_id, job.url, max_pages)
+            
+            # Create a task wrapper that tracks the background task
+            async def tracked_scrape_task():
+                try:
+                    await scrape_website_enhanced(job_id, job.url, max_pages)
+                except Exception as e:
+                    logger.error(f"Background task error for job {job_id}: {e}")
+                    # Fallback to basic scraping
+                    scrape_website_basic(job_id, job.url, max_pages)
+            
+            # Create and track the task
+            task = asyncio.create_task(tracked_scrape_task())
+            background_tasks_tracker.add(task)
+            
+            # Remove task from tracker when done
+            def cleanup_task(task):
+                background_tasks_tracker.discard(task)
+            
+            task.add_done_callback(cleanup_task)
+            
             return {"message": f"Job {job_id} started"}
         else:
             return {"message": f"Job {job_id} is already running"}
@@ -549,11 +622,27 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    import signal
     
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            reload=True,
+            log_level="info",
+            access_log=True
+        )
+    except KeyboardInterrupt:
+        logger.info("Server interrupted by user")
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+    finally:
+        logger.info("Server shutdown complete")

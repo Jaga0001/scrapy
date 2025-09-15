@@ -1,0 +1,27 @@
+# Google Cloud App Engine configuration
+runtime: python311
+
+env_variables:
+  GEMINI_API_KEY: "your_api_key_here"
+  DATABASE_URL: "sqlite:///./webscraper.db"
+  API_HOST: "0.0.0.0"
+  API_PORT: "8080"
+  DASHBOARD_HOST: "0.0.0.0"
+  DASHBOARD_PORT: "8501"
+
+automatic_scaling:
+  min_instances: 1
+  max_instances: 10
+  target_cpu_utilization: 0.6
+
+resources:
+  cpu: 1
+  memory_gb: 2
+  disk_size_gb: 10
+
+handlers:
+- url: /api/.*
+  script: auto
+  
+- url: /.*
+  script: auto
